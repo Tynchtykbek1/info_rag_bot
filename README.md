@@ -121,3 +121,25 @@ weights from about 471 MB to 119 MB but was slower than O3 on this CPU.
 An equal-weight BM25+dense RRF experiment was rejected because it reduced
 overall retrieval quality, especially for Italian cross-lingual queries. It is
 not part of the implementation.
+
+# Grounded single-turn answers
+
+Install the optional RAG dependencies with `pip install -e ".[rag]"`. Set
+`GEMINI_API_KEY` in the environment and optionally select a model with
+`MESSINA_GEMINI_MODEL` (the default is `gemini-2.5-flash`). Secrets and prompts
+are not logged.
+
+```powershell
+messina-info ask --index data/retrieval-index --language en --mode fast --query "When is the scholarship deadline?"
+messina-info ask --index data/retrieval-index --language it --mode quality --query "Quando scade la domanda?"
+```
+
+The pipeline retrieves Telegram sections, deduplicates messages, builds a
+bounded context whose content is explicitly marked as untrusted, requests a
+Pydantic-validated JSON response from Gemini, and validates every citation
+against the supplied context. Source links always come from index metadata.
+Invalid output, unavailable APIs, missing evidence, or empty retrieval produce
+a localized fallback. `fast` uses dense retrieval only and never loads ONNX;
+`quality` opts into the existing CPU ONNX reranker. This is single-turn RAG:
+there is no conversation memory, query rewriting, calibrated confidence score,
+or production retrieval threshold.

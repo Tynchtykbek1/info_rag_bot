@@ -16,6 +16,7 @@ messina-info = "messina_info.cli:main"
 test = ["pytest>=8"]
 retrieval = ["sentence-transformers>=3,<6"]
 reranking = ["sentence-transformers[onnx]>=5.7,<6"]
+rag = ["google-genai>=1,<2", "pydantic>=2,<3"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

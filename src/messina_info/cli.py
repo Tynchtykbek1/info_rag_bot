@@ -95,6 +95,25 @@ def _evaluate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _ask(args: argparse.Namespace) -> int:
+    from .llm import GeminiProvider
+    from .rag import RAGService
+
+    provider = _provider(args.model)
+    index = load_retrieval_index(args.index, provider, expected_model=args.model)
+    reranker = _reranker(args) if args.mode == "quality" else None
+    service = RAGService(
+        index,
+        GeminiProvider(model=args.gemini_model, timeout_seconds=args.timeout),
+        reranker=reranker,
+        candidate_k=args.candidate_k,
+        reranker_batch_size=args.reranker_batch_size,
+    )
+    result = service.answer(args.query, args.language, args.mode, args.k)
+    print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    return 0 if result.status == "answered" else 2
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="messina-info")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -123,6 +142,17 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--min-score", type=float)
     _add_reranker_arguments(evaluate)
     evaluate.set_defaults(handler=_evaluate)
+
+    ask = subparsers.add_parser("ask", help="answer from grounded Telegram context")
+    ask.add_argument("--index", type=Path, required=True)
+    ask.add_argument("--query", required=True)
+    ask.add_argument("--language", choices=("ru", "en", "it"), required=True)
+    ask.add_argument("--model", default=default_model, help="embedding model")
+    ask.add_argument("--gemini-model", default=os.getenv("MESSINA_GEMINI_MODEL", "gemini-2.5-flash"))
+    ask.add_argument("--timeout", type=float, default=30.0)
+    ask.add_argument("-k", type=int, default=5)
+    _add_reranker_arguments(ask)
+    ask.set_defaults(handler=_ask)
     return parser
 
 
