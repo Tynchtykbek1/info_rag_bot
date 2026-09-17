@@ -8,6 +8,8 @@ from typing import Callable, Protocol
 
 from pydantic import BaseModel, ConfigDict
 
+from .config import gemini_model, load_local_dotenv
+
 
 GEMINI_MODEL_ENV = "MESSINA_GEMINI_MODEL"
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
@@ -47,7 +49,8 @@ class GeminiProvider:
     ) -> None:
         if timeout_seconds <= 0 or max_retries < 0:
             raise ValueError("invalid Gemini timeout or retry count")
-        self.model = model or os.getenv(GEMINI_MODEL_ENV, DEFAULT_GEMINI_MODEL)
+        load_local_dotenv()
+        self.model = model or gemini_model(DEFAULT_GEMINI_MODEL)
         self.timeout_seconds = timeout_seconds
         self.max_retries = max_retries
         self._sleep = sleep
