@@ -1,0 +1,30 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.env
+*.db
+result.json
+
+# Model and embedding caches
+.cache/
+models/
+model_cache/
+embedding_cache/
+embeddings/
+huggingface/
+sentence_transformers/
+*.bin
+*.safetensors
+
+# Raw Telegram exports (only synthetic test fixtures are versioned)
+exports/
+telegram_export/
+ChatExport*/
+
+# Build and editor artifacts
+*.egg-info/
+build/
+dist/
+.idea/
+.vscode/
+

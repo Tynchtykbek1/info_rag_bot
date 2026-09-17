@@ -1,0 +1,30 @@
+{
+  "name": "Synthetic Messina Channel",
+  "type": "public_channel",
+  "id": 1000000000,
+  "messages": [
+    {
+      "id": 1,
+      "type": "message",
+      "date": "2024-01-02T09:30:00",
+      "date_unixtime": "1704187800",
+      "from": "Synthetic Editor",
+      "from_id": "user100",
+      "text": "Synthetic notice about a city event."
+    },
+    {
+      "id": 2,
+      "type": "message",
+      "date": "2024-01-02T10:00:00",
+      "date_unixtime": "1704189600",
+      "from": "Synthetic Editor",
+      "from_id": "user100",
+      "text": [
+        "Road closure on ",
+        {"type": "bold", "text": "Via Roma"},
+        "."
+      ]
+    }
+  ]
+}
+
