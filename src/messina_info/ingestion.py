@@ -35,6 +35,16 @@ class TelegramExport:
     messages: tuple[TelegramMessage, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class NormalizedTelegramRecord:
+    """A normalized message paired with persistence-specific export fields."""
+
+    message: TelegramMessage
+    published_at: int
+    edited_at: int | None
+    raw_json: str
+
+
 def _text_content(value: Any) -> str:
     """Flatten Telegram's string-or-rich-text representation."""
 
@@ -55,6 +65,17 @@ def _parse_date(value: Any, message_id: Any) -> datetime:
     except ValueError as exc:
         raise TelegramExportError(
             f"message {message_id!r} has an invalid date: {value!r}"
+        ) from exc
+
+
+def _parse_unix_timestamp(value: Any, field: str, message_id: int) -> int:
+    if isinstance(value, bool):
+        raise TelegramExportError(f"message {message_id!r} has no valid {field}")
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise TelegramExportError(
+            f"message {message_id!r} has no valid {field}"
         ) from exc
 
 
@@ -86,12 +107,8 @@ def _parse_messages(records: Iterable[Any]) -> tuple[TelegramMessage, ...]:
     return tuple(messages)
 
 
-def load_telegram_export(path: str | Path) -> TelegramExport:
-    """Load a Telegram Desktop JSON export from *path*.
-
-    The function performs no writes and retains naive timestamps as exported by
-    Telegram. Timestamps containing a UTC offset remain offset-aware.
-    """
+def read_telegram_payload(path: str | Path) -> Mapping[str, Any]:
+    """Read and validate the top-level structure of a Telegram export."""
 
     export_path = Path(path)
     try:
@@ -112,6 +129,53 @@ def load_telegram_export(path: str | Path) -> TelegramExport:
     records = payload.get("messages")
     if not isinstance(records, list):
         raise TelegramExportError("the export 'messages' field must be an array")
+    return payload
+
+
+def normalize_record(record: Any) -> NormalizedTelegramRecord:
+    """Validate and normalize one ordinary Telegram message record."""
+
+    if not isinstance(record, Mapping):
+        raise TelegramExportError("every item in 'messages' must be an object")
+    message_id = record.get("id")
+    if not isinstance(message_id, int) or isinstance(message_id, bool):
+        raise TelegramExportError("a message has no valid integer id")
+
+    edited_value = record.get("edited_unixtime")
+    edited_at = (
+        None
+        if edited_value in (None, "")
+        else _parse_unix_timestamp(edited_value, "edited_unixtime", message_id)
+    )
+    message = TelegramMessage(
+        id=message_id,
+        date=_parse_date(record.get("date"), message_id),
+        text=_text_content(record.get("text", "")),
+        author=record.get("from") if isinstance(record.get("from"), str) else None,
+        author_id=(
+            record.get("from_id") if isinstance(record.get("from_id"), str) else None
+        ),
+    )
+    return NormalizedTelegramRecord(
+        message=message,
+        published_at=_parse_unix_timestamp(
+            record.get("date_unixtime"), "date_unixtime", message_id
+        ),
+        edited_at=edited_at,
+        raw_json=json.dumps(record, ensure_ascii=False, separators=(",", ":")),
+    )
+
+
+def load_telegram_export(path: str | Path) -> TelegramExport:
+    """Load a Telegram Desktop JSON export from *path*.
+
+    The function performs no writes and retains naive timestamps as exported by
+    Telegram. Timestamps containing a UTC offset remain offset-aware.
+    """
+
+    payload = read_telegram_payload(path)
+    name = payload["name"]
+    records = payload["messages"]
 
     chat_type = payload.get("type")
     if not isinstance(chat_type, str):
@@ -126,4 +190,3 @@ def load_telegram_export(path: str | Path) -> TelegramExport:
         chat_id=chat_id,
         messages=_parse_messages(records),
     )
-
