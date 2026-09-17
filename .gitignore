@@ -14,10 +14,13 @@ embeddings/
 retrieval-index/
 .retrieval-index/
 vector-index/
+reranker_models/
+.reranker-models/
 huggingface/
 sentence_transformers/
 *.bin
 *.safetensors
+*.onnx
 
 # Raw Telegram exports (only synthetic test fixtures are versioned)
 exports/

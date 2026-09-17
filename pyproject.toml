@@ -15,6 +15,7 @@ messina-info = "messina_info.cli:main"
 [project.optional-dependencies]
 test = ["pytest>=8"]
 retrieval = ["sentence-transformers>=3,<6"]
+reranking = ["sentence-transformers[onnx]>=5.7,<6"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -72,3 +72,52 @@ reports unanswerable-query scores separately; an optional `--min-score` measures
 rejection for an externally selected threshold. A threshold measured on the same
 evaluation set is not production-ready, and neither is this baseline retrieval
 pipeline without further held-out evaluation and operational hardening.
+
+## Optional quality reranking
+
+Dense retrieval remains the default `fast` mode and does not import or load an
+ONNX reranker. Install the separate optional dependency to enable the two-stage
+`quality` mode:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[test,retrieval,reranking]"
+```
+
+Quality mode retrieves 15 dense candidates, scores the raw query and raw section
+text with `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1`, and then deduplicates by
+Telegram message. The default ONNX file is the model's O3-optimized
+`onnx/model_O3.onnx`, executed with `CPUExecutionProvider`. Reranker scores are
+ordering signals, not probabilities or confidence values.
+
+```powershell
+# Default low-latency dense search: no reranker is loaded.
+.\.venv\Scripts\python.exe -m messina_info.cli search `
+  --index .retrieval-index `
+  --query "Quando scade la domanda ERSU?" `
+  --mode fast
+
+# Optional quality mode.
+.\.venv\Scripts\python.exe -m messina_info.cli search `
+  --index .retrieval-index `
+  --query "Quando scade la domanda ERSU?" `
+  --mode quality `
+  --candidate-k 15 `
+  --reranker-batch-size 8
+
+# Evaluate the same quality mode.
+.\.venv\Scripts\python.exe -m messina_info.cli evaluate `
+  --index .retrieval-index `
+  --dataset eval/retrieval_cases.jsonl `
+  --mode quality
+```
+
+On the development CPU, O3 reranking at candidate-k 15 and batch size 8 kept
+Hit@1 at 28/30 and Hit@5 at 30/30, with median latency 2.31 seconds and p95
+latency 2.64 seconds. This was materially faster than the 4.16-second PyTorch
+median but did not meet the experimental 1.5-second target, so quality mode is
+optional and is not claimed to be production-ready. Dynamic INT8 reduced the
+weights from about 471 MB to 119 MB but was slower than O3 on this CPU.
+
+An equal-weight BM25+dense RRF experiment was rejected because it reduced
+overall retrieval quality, especially for Italian cross-lingual queries. It is
+not part of the implementation.

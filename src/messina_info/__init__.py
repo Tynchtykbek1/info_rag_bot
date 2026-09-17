@@ -29,6 +29,13 @@ from .retrieval import (
     build_retrieval_index,
     load_retrieval_index,
 )
+from .reranking import (
+    DEFAULT_RERANKER_MODEL,
+    ONNXCrossEncoderReranker,
+    RerankedSearchResult,
+    Reranker,
+    rerank_search,
+)
 
 __all__ = [
     "TelegramExport",
@@ -55,4 +62,9 @@ __all__ = [
     "build_retrieval_documents",
     "build_retrieval_index",
     "load_retrieval_index",
+    "DEFAULT_RERANKER_MODEL",
+    "ONNXCrossEncoderReranker",
+    "RerankedSearchResult",
+    "Reranker",
+    "rerank_search",
 ]

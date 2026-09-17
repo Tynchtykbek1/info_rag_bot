@@ -11,6 +11,7 @@ from typing import Literal, cast
 
 from .embeddings import EmbeddingProvider
 from .retrieval import RetrievalIndex
+from .reranking import Reranker, rerank_search
 
 
 EvaluationLanguage = Literal["ru", "en", "it"]
@@ -191,6 +192,10 @@ def evaluate_retrieval(
     *,
     embedding_provider: EmbeddingProvider | None = None,
     min_score: float | None = None,
+    reranker: Reranker | None = None,
+    candidate_k: int = 15,
+    reranker_batch_size: int = 8,
+    deduplicate: bool = True,
 ) -> dict[str, object]:
     """Evaluate retrieval ranks and report unanswerable scores separately."""
 
@@ -199,12 +204,24 @@ def evaluate_retrieval(
     unanswerable: list[dict[str, object]] = []
 
     for case in cases:
-        results = index.search(
-            case.query,
-            k=5,
-            embedding_provider=embedding_provider,
-            recency_weight=0.0,
-        )
+        if reranker is None:
+            results = index.search(
+                case.query,
+                k=5,
+                embedding_provider=embedding_provider,
+                recency_weight=0.0,
+            )
+        else:
+            results = rerank_search(
+                index,
+                case.query,
+                reranker,
+                k=5,
+                candidate_k=candidate_k,
+                batch_size=reranker_batch_size,
+                deduplicate=deduplicate,
+                embedding_provider=embedding_provider,
+            )
         if not case.answerable:
             max_score = results[0].semantic_score if results else None
             item: dict[str, object] = {
