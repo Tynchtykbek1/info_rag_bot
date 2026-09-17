@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "messina-info"
 version = "0.1.0"
 description = "Telegram export ingestion tools"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
@@ -17,4 +17,3 @@ pythonpath = ["src"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
-
