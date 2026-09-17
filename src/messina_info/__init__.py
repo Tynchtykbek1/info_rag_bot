@@ -9,6 +9,7 @@ from .ingestion import (
 from .database import initialize_database
 from .importer import ImportStats, import_telegram_export
 from .segmentation import LanguageCode, LanguageSection, split_language_sections
+from .evaluation import RetrievalCase, load_retrieval_cases, validate_retrieval_cases
 
 __all__ = [
     "TelegramExport",
@@ -21,4 +22,7 @@ __all__ = [
     "LanguageCode",
     "LanguageSection",
     "split_language_sections",
+    "RetrievalCase",
+    "load_retrieval_cases",
+    "validate_retrieval_cases",
 ]
