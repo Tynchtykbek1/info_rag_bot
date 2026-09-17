@@ -11,6 +11,9 @@ models/
 model_cache/
 embedding_cache/
 embeddings/
+retrieval-index/
+.retrieval-index/
+vector-index/
 huggingface/
 sentence_transformers/
 *.bin
@@ -27,4 +30,3 @@ build/
 dist/
 .idea/
 .vscode/
-

@@ -9,6 +9,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
+from .embeddings import EmbeddingProvider
+from .retrieval import RetrievalIndex
+
 
 EvaluationLanguage = Literal["ru", "en", "it"]
 
@@ -157,3 +160,106 @@ def validate_retrieval_cases(
                 errors.append(f"{label}: message ID {message_id} is absent from database")
 
     return errors
+
+
+def _empty_metrics() -> dict[str, int | float]:
+    return {
+        "checked_cases": 0,
+        "hit_at_1": 0.0,
+        "hit_at_3": 0.0,
+        "hit_at_5": 0.0,
+        "mrr_at_5": 0.0,
+    }
+
+
+def _finalize_metrics(totals: dict[str, int | float]) -> dict[str, int | float]:
+    count = int(totals["checked_cases"])
+    if count == 0:
+        return totals
+    return {
+        "checked_cases": count,
+        "hit_at_1": float(totals["hit_at_1"]) / count,
+        "hit_at_3": float(totals["hit_at_3"]) / count,
+        "hit_at_5": float(totals["hit_at_5"]) / count,
+        "mrr_at_5": float(totals["mrr_at_5"]) / count,
+    }
+
+
+def evaluate_retrieval(
+    index: RetrievalIndex,
+    cases: Sequence[RetrievalCase],
+    *,
+    embedding_provider: EmbeddingProvider | None = None,
+    min_score: float | None = None,
+) -> dict[str, object]:
+    """Evaluate retrieval ranks and report unanswerable scores separately."""
+
+    totals = _empty_metrics()
+    language_totals = {language: _empty_metrics() for language in ("ru", "en", "it")}
+    unanswerable: list[dict[str, object]] = []
+
+    for case in cases:
+        results = index.search(
+            case.query,
+            k=5,
+            embedding_provider=embedding_provider,
+            recency_weight=0.0,
+        )
+        if not case.answerable:
+            max_score = results[0].semantic_score if results else None
+            item: dict[str, object] = {
+                "case_id": case.case_id,
+                "language": case.language,
+                "max_semantic_score": max_score,
+            }
+            if min_score is not None:
+                item["rejected"] = max_score is None or max_score < min_score
+            unanswerable.append(item)
+            continue
+
+        relevant = set(case.relevant_message_ids)
+        rank = next(
+            (
+                position
+                for position, result in enumerate(results, start=1)
+                if result.document.message_id in relevant
+            ),
+            None,
+        )
+        for metrics in (totals, language_totals[case.language]):
+            metrics["checked_cases"] = int(metrics["checked_cases"]) + 1
+            if rank is not None and rank <= 5:
+                metrics["mrr_at_5"] = float(metrics["mrr_at_5"]) + 1.0 / rank
+                metrics["hit_at_5"] = float(metrics["hit_at_5"]) + 1.0
+                if rank <= 3:
+                    metrics["hit_at_3"] = float(metrics["hit_at_3"]) + 1.0
+                if rank == 1:
+                    metrics["hit_at_1"] = float(metrics["hit_at_1"]) + 1.0
+
+    scores = [
+        float(item["max_semantic_score"])
+        for item in unanswerable
+        if item["max_semantic_score"] is not None
+    ]
+    summary: dict[str, object] = {
+        "count": len(unanswerable),
+        "cases": unanswerable,
+        "max_semantic_score_min": min(scores) if scores else None,
+        "max_semantic_score_max": max(scores) if scores else None,
+        "max_semantic_score_mean": sum(scores) / len(scores) if scores else None,
+        "min_score": min_score,
+        "rejection_accuracy": None,
+    }
+    if min_score is not None:
+        rejected = sum(bool(item["rejected"]) for item in unanswerable)
+        summary["rejection_accuracy"] = (
+            rejected / len(unanswerable) if unanswerable else None
+        )
+    return {
+        "overall": _finalize_metrics(totals),
+        "by_language": {
+            language: _finalize_metrics(metrics)
+            for language, metrics in language_totals.items()
+        },
+        "unanswerable": summary,
+    }

@@ -3,12 +3,15 @@ from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 
 import pytest
+import numpy as np
 
 from messina_info.evaluation import (
     RetrievalCase,
     load_retrieval_cases,
     validate_retrieval_cases,
+    evaluate_retrieval,
 )
+from messina_info.retrieval import IndexManifest, RetrievalDocument, RetrievalIndex
 
 
 def _case(**overrides: object) -> RetrievalCase:
@@ -161,3 +164,80 @@ def test_validation_reports_every_message_id_absent_from_database() -> None:
         "synthetic_en_01: message ID 20 is absent from database",
         "synthetic_en_01: message ID 30 is absent from database",
     ]
+
+
+class _EvaluationProvider:
+    model_name = "fake-e5"
+    dimension = 2
+
+    def encode(self, texts: list[str]) -> np.ndarray:
+        rows = []
+        for text in texts:
+            rows.append([1.0, 0.0] if "deadline" in text else [0.0, 1.0])
+        return np.asarray(rows, dtype=np.float32)
+
+
+def _evaluation_index() -> RetrievalIndex:
+    documents = [
+        RetrievalDocument(
+            section_key=f"100:{message_id}:0:en",
+            channel_id=100,
+            message_id=message_id,
+            date=None,
+            language="en",
+            section_index=0,
+            source_url=f"https://example.test/{message_id}",
+            text=f"Synthetic document {message_id}",
+            fingerprint=str(message_id),
+        )
+        for message_id in (10, 20, 30)
+    ]
+    return RetrievalIndex(
+        np.array([[1.0, 0.0], [0.8, 0.6], [0.0, 1.0]], dtype=np.float32),
+        documents,
+        IndexManifest(1, "fake-e5", 2, 3, "synthetic", "2024-01-01T00:00:00Z"),
+        _EvaluationProvider(),
+    )
+
+
+def test_evaluation_computes_hit_at_k_mrr_and_languages() -> None:
+    cases = [
+        _case(query="deadline", relevant_message_ids=(10,), preferred_message_id=10),
+        _case(
+            case_id="synthetic_it_01",
+            query="different topic",
+            language="it",
+            relevant_message_ids=(20,),
+            preferred_message_id=20,
+        ),
+    ]
+
+    report = evaluate_retrieval(_evaluation_index(), cases)
+
+    assert report["overall"] == {
+        "checked_cases": 2,
+        "hit_at_1": 0.5,
+        "hit_at_3": 1.0,
+        "hit_at_5": 1.0,
+        "mrr_at_5": 0.75,
+    }
+    assert report["by_language"]["en"]["hit_at_1"] == 1.0
+    assert report["by_language"]["it"]["mrr_at_5"] == 0.5
+    assert report["by_language"]["ru"]["checked_cases"] == 0
+
+
+def test_unanswerable_cases_are_separate_and_optional_threshold_is_reported() -> None:
+    case = _case(
+        answerable=False,
+        relevant_message_ids=(),
+        preferred_message_id=None,
+        query="different topic",
+    )
+
+    without_threshold = evaluate_retrieval(_evaluation_index(), [case])
+    with_threshold = evaluate_retrieval(_evaluation_index(), [case], min_score=1.1)
+
+    assert without_threshold["overall"]["checked_cases"] == 0
+    assert without_threshold["unanswerable"]["rejection_accuracy"] is None
+    assert with_threshold["unanswerable"]["rejection_accuracy"] == 1.0
+    assert with_threshold["unanswerable"]["cases"][0]["rejected"] is True
