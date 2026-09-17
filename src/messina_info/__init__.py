@@ -8,6 +8,7 @@ from .ingestion import (
 )
 from .database import initialize_database
 from .importer import ImportStats, import_telegram_export
+from .segmentation import LanguageCode, LanguageSection, split_language_sections
 
 __all__ = [
     "TelegramExport",
@@ -17,4 +18,7 @@ __all__ = [
     "ImportStats",
     "import_telegram_export",
     "initialize_database",
+    "LanguageCode",
+    "LanguageSection",
+    "split_language_sections",
 ]
