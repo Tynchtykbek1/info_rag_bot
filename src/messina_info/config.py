@@ -13,7 +13,11 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 
-def load_local_dotenv(path: str | Path | None = None) -> bool:
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_DOTENV_PATH = PROJECT_ROOT / ".env"
+
+
+def load_local_dotenv(path: str | Path = DEFAULT_DOTENV_PATH) -> bool:
     """Load local dotenv values without overriding real environment values."""
 
     return load_dotenv(dotenv_path=path, override=False)

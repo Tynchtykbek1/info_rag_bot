@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import time
+from pathlib import Path
 from typing import Callable, Protocol
 
 from pydantic import BaseModel, ConfigDict
@@ -46,10 +47,12 @@ class GeminiProvider:
         timeout_seconds: float = 30.0,
         max_retries: int = 2,
         sleep: Callable[[float], None] = time.sleep,
+        dotenv_path: str | Path | None = None,
     ) -> None:
         if timeout_seconds <= 0 or max_retries < 0:
             raise ValueError("invalid Gemini timeout or retry count")
-        load_local_dotenv()
+        if dotenv_path is not None:
+            load_local_dotenv(dotenv_path)
         self.model = model or gemini_model(DEFAULT_GEMINI_MODEL)
         self.timeout_seconds = timeout_seconds
         self.max_retries = max_retries

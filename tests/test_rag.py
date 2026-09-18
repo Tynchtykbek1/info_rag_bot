@@ -1,4 +1,5 @@
 import hashlib
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -95,13 +96,46 @@ def test_fast_does_not_call_reranker_but_quality_does() -> None:
     assert reranker.calls == 1
 
 
-def test_missing_api_key_is_clear_and_does_not_expose_secrets(monkeypatch) -> None:
+def test_missing_api_key_is_clear_and_does_not_expose_secrets(monkeypatch, tmp_path) -> None:
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    provider = GeminiProvider()
+    provider = GeminiProvider(dotenv_path=tmp_path / "does-not-exist.env")
     assert not provider.loaded
     with pytest.raises(LLMConfigurationError, match="GEMINI_API_KEY") as exc:
         provider.generate("system", "prompt")
     assert "prompt" not in str(exc.value)
+
+
+def test_gemini_uses_pydantic_class_as_response_schema(monkeypatch) -> None:
+    from google.genai import types
+
+    captured = {}
+
+    class FakeModels:
+        def generate_content(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                parsed=StructuredResponse(
+                    answerable=True,
+                    answer="Grounded answer",
+                    cited_source_ids=["tg-100-7"],
+                    reason="supported",
+                )
+            )
+
+    class FakeGenerateContentConfig:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    monkeypatch.setattr(types, "GenerateContentConfig", FakeGenerateContentConfig)
+    provider = GeminiProvider()
+    provider._client = SimpleNamespace(models=FakeModels())
+
+    response = provider.generate("system", "prompt")
+
+    assert response.answerable
+    config = captured["config"].kwargs
+    assert config["response_schema"] is StructuredResponse
+    assert not isinstance(config["response_schema"], dict)
 
 
 def test_schema_rejects_malformed_output() -> None:

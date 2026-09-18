@@ -9,6 +9,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Sequence
 
+from .config import load_local_dotenv
 from .embeddings import (
     DEFAULT_EMBEDDING_MODEL,
     EMBEDDING_MODEL_ENV,
@@ -176,6 +177,7 @@ def _reranker(args: argparse.Namespace) -> ONNXCrossEncoderReranker:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    load_local_dotenv()
     args = build_parser().parse_args(argv)
     return args.handler(args)
 
