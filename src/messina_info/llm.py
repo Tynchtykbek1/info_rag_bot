@@ -100,13 +100,13 @@ class GeminiProvider:
                     config=types.GenerateContentConfig(
                         system_instruction=system_instruction,
                         response_mime_type="application/json",
-                        response_schema=StructuredResponse,
+                        response_json_schema=StructuredResponse.model_json_schema(),
                         max_output_tokens=1024,
                     ),
                 )
                 parsed = getattr(response, "parsed", None)
-                if isinstance(parsed, StructuredResponse):
-                    return parsed
+                if parsed is not None:
+                    return StructuredResponse.model_validate(parsed)
                 return StructuredResponse.model_validate_json(response.text)
             except Exception as exc:
                 if self._transient(exc) and attempt < self.max_retries:

@@ -105,7 +105,7 @@ def test_missing_api_key_is_clear_and_does_not_expose_secrets(monkeypatch, tmp_p
     assert "prompt" not in str(exc.value)
 
 
-def test_gemini_uses_pydantic_class_as_response_schema(monkeypatch) -> None:
+def test_gemini_uses_standard_json_schema_and_validates_parsed_dict(monkeypatch) -> None:
     from google.genai import types
 
     captured = {}
@@ -114,12 +114,12 @@ def test_gemini_uses_pydantic_class_as_response_schema(monkeypatch) -> None:
         def generate_content(self, **kwargs):
             captured.update(kwargs)
             return SimpleNamespace(
-                parsed=StructuredResponse(
-                    answerable=True,
-                    answer="Grounded answer",
-                    cited_source_ids=["tg-100-7"],
-                    reason="supported",
-                )
+                parsed={
+                    "answerable": True,
+                    "answer": "Grounded answer",
+                    "cited_source_ids": ["tg-100-7"],
+                    "reason": "supported",
+                }
             )
 
     class FakeGenerateContentConfig:
@@ -134,8 +134,23 @@ def test_gemini_uses_pydantic_class_as_response_schema(monkeypatch) -> None:
 
     assert response.answerable
     config = captured["config"].kwargs
-    assert config["response_schema"] is StructuredResponse
-    assert not isinstance(config["response_schema"], dict)
+    assert "response_schema" not in config
+    schema = config["response_json_schema"]
+    assert schema["type"] == "object"
+    assert set(schema["required"]) == {
+        "answerable", "answer", "cited_source_ids", "reason"
+    }
+
+    def keys(value):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                yield key
+                yield from keys(child)
+        elif isinstance(value, list):
+            for child in value:
+                yield from keys(child)
+
+    assert "additional_properties" not in set(keys(schema))
 
 
 def test_schema_rejects_malformed_output() -> None:
