@@ -1,11 +1,34 @@
 # Messina Info
 
-Tools for ingesting a Telegram JSON export into a normalized local dataset.
+Messina Info is a multilingual retrieval-augmented assistant for University of
+Messina students. It ingests a local Telegram export, segments posts by
+language, retrieves relevant RU/EN/IT sections, and can produce grounded Gemini
+answers whose citations are checked against the retrieved context.
 
 The repository intentionally excludes raw Telegram exports, secrets, databases,
 and downloaded model or embedding caches. Tests use only synthetic fixtures.
 
-## Usage
+## Installation
+
+Python 3.10 or newer is required. Create a virtual environment and install the
+features you need:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e ".[test,retrieval,reranking,rag]"
+```
+
+For Gemini answers, copy the safe template and set the key only in the ignored
+local file. Existing process environment variables take precedence.
+
+```powershell
+Copy-Item .env.example .env
+# Edit .env locally; never commit it.
+```
+
+Retrieval-only commands do not require a Gemini key.
+
+## Ingestion API
 
 ```python
 from messina_info import load_telegram_export
@@ -73,6 +96,10 @@ rejection for an externally selected threshold. A threshold measured on the same
 evaluation set is not production-ready, and neither is this baseline retrieval
 pipeline without further held-out evaluation and operational hardening.
 
+On the checked-in 30-case RU/EN/IT evaluation set, dense top-20 retrieval
+reached Hit@1 28/30, Hit@3 30/30, Hit@5 30/30, and deduplicated MRR@5 0.9667.
+These are development-set retrieval metrics, not production guarantees.
+
 ## Optional quality reranking
 
 Dense retrieval remains the default `fast` mode and does not import or load an
@@ -122,7 +149,7 @@ An equal-weight BM25+dense RRF experiment was rejected because it reduced
 overall retrieval quality, especially for Italian cross-lingual queries. It is
 not part of the implementation.
 
-# Grounded single-turn answers
+## Grounded single-turn answers
 
 Install the optional RAG dependencies with `pip install -e ".[rag]"`. Set
 `GEMINI_API_KEY` in the environment and optionally select a model with
@@ -130,8 +157,17 @@ Install the optional RAG dependencies with `pip install -e ".[rag]"`. Set
 are not logged.
 
 ```powershell
-messina-info ask --index data/retrieval-index --language en --mode fast --query "When is the scholarship deadline?"
-messina-info ask --index data/retrieval-index --language it --mode quality --query "Quando scade la domanda?"
+.\.venv\Scripts\python.exe -m messina_info.cli ask `
+  --index .retrieval-index `
+  --language en `
+  --mode fast `
+  --query "When is the scholarship deadline?"
+
+.\.venv\Scripts\python.exe -m messina_info.cli ask `
+  --index .retrieval-index `
+  --language it `
+  --mode quality `
+  --query "Quando scade la domanda?"
 ```
 
 The pipeline retrieves Telegram sections, deduplicates messages, builds a
@@ -143,3 +179,28 @@ a localized fallback. `fast` uses dense retrieval only and never loads ONNX;
 `quality` opts into the existing CPU ONNX reranker. This is single-turn RAG:
 there is no conversation memory, query rewriting, calibrated confidence score,
 or production retrieval threshold.
+
+## Tests and repository contents
+
+Run the complete offline suite with:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest
+```
+
+The public repository contains source code, offline tests with synthetic
+fixtures, and the multilingual retrieval evaluation queries. It does not
+contain the private/raw Telegram export, normalized message database, generated
+retrieval index, downloaded embedding or reranker models, Hugging Face cache,
+local `.env`, or API credentials. Those artifacts remain local and are covered
+by `.gitignore`.
+
+## Known limitations
+
+This project is not production-ready. Live Gemini calls have shown transient
+HTTP 503/504 provider failures. In the latest six-case smoke test, end-to-end
+latency was approximately 16–32 seconds per query. Two scholarship questions
+were answered and grounded correctly, while the English answerable scholarship
+case incorrectly returned `insufficient_evidence` on retry. The system also has
+no conversation memory, calibrated confidence score, production retrieval
+threshold, or service-level availability guarantees.
