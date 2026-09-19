@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from messina_info.llm import GeminiProvider, LLMConfigurationError, StructuredResponse
+from messina_info.followup import ContextualQuery
 from messina_info.rag import FALLBACKS, RAGService
 from messina_info.retrieval import IndexManifest, RetrievalDocument, RetrievalIndex
 
@@ -94,6 +95,75 @@ def test_fast_does_not_call_reranker_but_quality_does() -> None:
     assert reranker.calls == 0
     service.answer("q", "en", "quality")
     assert reranker.calls == 1
+
+
+def test_contextual_answer_uses_dual_retrieval_and_separates_prompt_sections(
+    monkeypatch,
+) -> None:
+    llm = FakeLLM(_yes())
+    reranker = FakeReranker()
+    service = RAGService(_index(), llm, reranker=reranker, candidate_k=9,
+                         reranker_batch_size=4)
+    query = ContextualQuery("current question", "previous topic and current question",
+                            (42,), True)
+    captured = {}
+
+    def fake_search(index, contextual_query, actual_reranker, **kwargs):
+        captured.update(index=index, query=contextual_query,
+                        reranker=actual_reranker, kwargs=kwargs)
+        return index.search("q", k=1)
+
+    monkeypatch.setattr("messina_info.rag.contextual_rerank_search", fake_search)
+
+    result = service.answer_contextual(query, "en", top_k=1)
+
+    assert result.status == "answered" and result.retrieval_mode == "quality"
+    assert captured["query"] is query and captured["reranker"] is reranker
+    assert captured["kwargs"] == {"k": 1, "candidate_k": 9, "batch_size": 4}
+    prompt = llm.calls[0][1]
+    assert "ORIGINAL CURRENT QUESTION:\ncurrent question" in prompt
+    assert "CONTEXTUAL RETRIEVAL QUERY:\nprevious topic and current question" in prompt
+    assert "not factual source evidence" in prompt
+    assert "only from the Telegram source context" in prompt
+
+
+def test_contextual_answer_preserves_citation_and_provider_validation(monkeypatch) -> None:
+    query = ContextualQuery("current", "previous current", (1,), True)
+    monkeypatch.setattr(
+        "messina_info.rag.contextual_rerank_search",
+        lambda *args, **kwargs: _index().search("q", k=1),
+    )
+    invalid = RAGService(_index(), FakeLLM(_yes("unknown")), reranker=FakeReranker())
+    failed = RAGService(
+        _index(), FakeLLM(error=RuntimeError("provider")), reranker=FakeReranker()
+    )
+
+    assert invalid.answer_contextual(query, "en").technical_reason == "invalid_citations"
+    assert failed.answer_contextual(query, "en").technical_reason == "provider_error"
+
+
+def test_contextual_answer_without_reranker_falls_back() -> None:
+    query = ContextualQuery("current", "current", (), False)
+    result = RAGService(_index(), FakeLLM(_yes())).answer_contextual(query, "en")
+    assert result.technical_reason == "reranker_not_configured"
+    assert result.retrieval_mode == "quality"
+
+
+@pytest.mark.parametrize(
+    ("query", "language", "top_k", "match"),
+    [
+        (ContextualQuery("current", "current", (), False), "de", 5, "language"),
+        (ContextualQuery("", "current", (), False), "en", 5, "query"),
+        (ContextualQuery("current", "", (), False), "en", 5, "query"),
+        (ContextualQuery("current", "current", (), False), "en", 0, "top_k"),
+        (ContextualQuery("current", "current", (), False), "en", True, "top_k"),
+    ],
+)
+def test_contextual_answer_rejects_invalid_requests(query, language, top_k, match) -> None:
+    with pytest.raises(ValueError, match=match):
+        RAGService(_index(), FakeLLM(_yes()), reranker=FakeReranker()).answer_contextual(
+            query, language, top_k=top_k
+        )
 
 
 def test_missing_api_key_is_clear_and_does_not_expose_secrets(monkeypatch, tmp_path) -> None:

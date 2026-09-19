@@ -20,6 +20,7 @@ from .contextual_retrieval import (
     ContextualRerankedResult,
     contextual_rerank_search,
 )
+from .chat import ChatResult, ChatService
 from .importer import ImportStats, import_telegram_export
 from .segmentation import LanguageCode, LanguageSection, split_language_sections
 from .evaluation import (
@@ -69,6 +70,8 @@ __all__ = [
     "build_contextual_query",
     "ContextualRerankedResult",
     "contextual_rerank_search",
+    "ChatResult",
+    "ChatService",
     "LanguageCode",
     "LanguageSection",
     "split_language_sections",
