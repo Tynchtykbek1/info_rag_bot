@@ -6,7 +6,15 @@ from .ingestion import (
     TelegramMessage,
     load_telegram_export,
 )
-from .database import initialize_database
+from .database import connect_database, initialize_database
+from .conversations import (
+    Conversation,
+    ConversationMessage,
+    append_message,
+    clear_conversation,
+    get_or_create_conversation,
+    get_recent_messages,
+)
 from .importer import ImportStats, import_telegram_export
 from .segmentation import LanguageCode, LanguageSection, split_language_sections
 from .evaluation import (
@@ -45,6 +53,13 @@ __all__ = [
     "ImportStats",
     "import_telegram_export",
     "initialize_database",
+    "connect_database",
+    "Conversation",
+    "ConversationMessage",
+    "get_or_create_conversation",
+    "append_message",
+    "get_recent_messages",
+    "clear_conversation",
     "LanguageCode",
     "LanguageSection",
     "split_language_sections",
