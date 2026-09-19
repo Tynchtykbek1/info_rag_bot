@@ -15,6 +15,7 @@ from .conversations import (
     get_or_create_conversation,
     get_recent_messages,
 )
+from .followup import ContextualQuery, build_contextual_query
 from .importer import ImportStats, import_telegram_export
 from .segmentation import LanguageCode, LanguageSection, split_language_sections
 from .evaluation import (
@@ -60,6 +61,8 @@ __all__ = [
     "append_message",
     "get_recent_messages",
     "clear_conversation",
+    "ContextualQuery",
+    "build_contextual_query",
     "LanguageCode",
     "LanguageSection",
     "split_language_sections",
