@@ -16,6 +16,10 @@ from .conversations import (
     get_recent_messages,
 )
 from .followup import ContextualQuery, build_contextual_query
+from .contextual_retrieval import (
+    ContextualRerankedResult,
+    contextual_rerank_search,
+)
 from .importer import ImportStats, import_telegram_export
 from .segmentation import LanguageCode, LanguageSection, split_language_sections
 from .evaluation import (
@@ -63,6 +67,8 @@ __all__ = [
     "clear_conversation",
     "ContextualQuery",
     "build_contextual_query",
+    "ContextualRerankedResult",
+    "contextual_rerank_search",
     "LanguageCode",
     "LanguageSection",
     "split_language_sections",
