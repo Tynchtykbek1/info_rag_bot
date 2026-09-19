@@ -21,6 +21,7 @@ from .contextual_retrieval import (
     contextual_rerank_search,
 )
 from .chat import ChatResult, ChatService
+from .bot_settings import BotSettings, create_chat_service, load_bot_settings
 from .importer import ImportStats, import_telegram_export
 from .segmentation import LanguageCode, LanguageSection, split_language_sections
 from .evaluation import (
@@ -72,6 +73,9 @@ __all__ = [
     "contextual_rerank_search",
     "ChatResult",
     "ChatService",
+    "BotSettings",
+    "load_bot_settings",
+    "create_chat_service",
     "LanguageCode",
     "LanguageSection",
     "split_language_sections",

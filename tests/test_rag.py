@@ -7,7 +7,7 @@ from pydantic import ValidationError
 
 from messina_info.llm import GeminiProvider, LLMConfigurationError, StructuredResponse
 from messina_info.followup import ContextualQuery
-from messina_info.rag import FALLBACKS, RAGService
+from messina_info.rag import FALLBACKS, PROVIDER_FALLBACKS, RAGService
 from messina_info.retrieval import IndexManifest, RetrievalDocument, RetrievalIndex
 
 
@@ -77,9 +77,11 @@ def test_invalid_structured_answers_fall_back(response, reason) -> None:
 
 
 @pytest.mark.parametrize("error", [RuntimeError("broken JSON"), TimeoutError()])
-def test_malformed_provider_output_and_timeout_fall_back(error) -> None:
-    result = RAGService(_index(), FakeLLM(error=error)).answer("q", "en")
+@pytest.mark.parametrize("language", ["ru", "en", "it"])
+def test_malformed_provider_output_and_timeout_fall_back(error, language) -> None:
+    result = RAGService(_index(), FakeLLM(error=error)).answer("q", language)
     assert result.technical_reason == "provider_error"
+    assert result.answer == PROVIDER_FALLBACKS[language]
 
 
 def test_empty_retrieval_does_not_call_provider() -> None:

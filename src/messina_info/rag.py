@@ -19,6 +19,11 @@ FALLBACKS = {
     "en": "The available channel messages do not contain enough information for a reliable answer.",
     "it": "I messaggi disponibili del canale non contengono informazioni sufficienti per una risposta affidabile.",
 }
+PROVIDER_FALLBACKS = {
+    "ru": "Сервис ответов временно недоступен. Попробуйте ещё раз через несколько минут.",
+    "en": "The answer service is temporarily unavailable. Please try again in a few minutes.",
+    "it": "Il servizio di risposta è temporaneamente non disponibile. Riprova tra qualche minuto.",
+}
 
 SYSTEM_INSTRUCTION = """You answer using only the supplied Telegram source context.
 Do not use external knowledge. Answer in the user's specified language.
@@ -68,7 +73,8 @@ class RAGService:
         self.max_context_chars = max_context_chars
 
     def _fallback(self, language: Language, mode: Literal["fast", "quality"], reason: str) -> RAGAnswer:
-        return RAGAnswer("fallback", FALLBACKS[language], (), mode, (), reason)
+        answer = PROVIDER_FALLBACKS[language] if reason == "provider_error" else FALLBACKS[language]
+        return RAGAnswer("fallback", answer, (), mode, (), reason)
 
     @staticmethod
     def _validate_request(language: Language, top_k: int) -> None:

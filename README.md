@@ -176,9 +176,33 @@ Pydantic-validated JSON response from Gemini, and validates every citation
 against the supplied context. Source links always come from index metadata.
 Invalid output, unavailable APIs, missing evidence, or empty retrieval produce
 a localized fallback. `fast` uses dense retrieval only and never loads ONNX;
-`quality` opts into the existing CPU ONNX reranker. This is single-turn RAG:
-there is no conversation memory, query rewriting, calibrated confidence score,
-or production retrieval threshold.
+`quality` opts into the existing CPU ONNX reranker. Conversation history can be
+stored in SQLite and used for deterministic dual retrieval. There is still no
+calibrated confidence score or production retrieval threshold.
+
+## Local Telegram bot
+
+Create a bot token with [@BotFather](https://t.me/BotFather), install all local
+features, and copy the environment template:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[test,retrieval,reranking,rag,bot]"
+Copy-Item .env.example .env
+```
+
+Set `TELEGRAM_BOT_TOKEN` and `GEMINI_API_KEY` only in the ignored `.env` file.
+The retrieval index configured by `MESSINA_INDEX_PATH` must already be built.
+Start long polling locally with:
+
+```powershell
+.\.venv\Scripts\messina-info-bot.exe
+```
+
+The first model load may be slow. This MVP supports private chats only; use
+`/language ru|en|it` to select a language and `/reset` to clear conversation
+history. Answers include Telegram source links but are not guaranteed to be
+perfect. Typical end-to-end latency is several seconds or more, and Gemini may
+occasionally return transient HTTP 429/503 errors.
 
 ## Tests and repository contents
 
@@ -202,5 +226,5 @@ HTTP 503/504 provider failures. In the latest six-case smoke test, end-to-end
 latency was approximately 16–32 seconds per query. Two scholarship questions
 were answered and grounded correctly, while the English answerable scholarship
 case incorrectly returned `insufficient_evidence` on retry. The system also has
-no conversation memory, calibrated confidence score, production retrieval
-threshold, or service-level availability guarantees.
+no calibrated confidence score, production retrieval threshold, or service-level
+availability guarantees.

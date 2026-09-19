@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .conversations import (
     append_message,
+    clear_conversation,
     get_or_create_conversation,
     get_recent_messages,
 )
@@ -55,6 +56,34 @@ class ChatService:
         self.max_query_chars = max_query_chars
         self.top_k = top_k
         initialize_database(self.database_path)
+
+    def reset(
+        self,
+        *,
+        platform: str,
+        external_chat_id: str,
+        external_user_id: str | None = None,
+        language: Language | None = None,
+    ) -> int:
+        normalized_platform = _required(platform, "platform")
+        normalized_chat_id = _required(external_chat_id, "external_chat_id")
+        if language is not None and language not in FALLBACKS:
+            raise ValueError("language must be ru, en, or it")
+        connection = connect_database(self.database_path)
+        try:
+            with connection:
+                conversation = get_or_create_conversation(
+                    connection,
+                    platform=normalized_platform,
+                    external_chat_id=normalized_chat_id,
+                    external_user_id=external_user_id,
+                    language=language,
+                )
+                return clear_conversation(
+                    connection, conversation_id=conversation.id
+                )
+        finally:
+            connection.close()
 
     def reply(
         self,

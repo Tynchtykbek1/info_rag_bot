@@ -195,3 +195,40 @@ def test_one_reply_does_not_duplicate_user_message(tmp_path: Path) -> None:
     service.reply(platform="telegram", external_chat_id="1", external_user_id=None,
                   query="Once", language="en")
     assert [m.role for m in _messages(database, "1")].count("user") == 1
+
+
+def test_reset_clears_history_without_calling_rag(tmp_path: Path) -> None:
+    database = tmp_path / "chat.db"
+    rag = FakeRAG()
+    service = ChatService(database, rag)  # type: ignore[arg-type]
+    service.reply(platform="telegram", external_chat_id="1", external_user_id="old",
+                  query="Question", language="en")
+
+    deleted = service.reset(platform="telegram", external_chat_id="1",
+                            external_user_id="new", language="it")
+
+    assert deleted == 2
+    assert _messages(database, "1") == ()
+    assert len(rag.calls) == 1
+    with connect_database(database) as connection:
+        metadata = connection.execute(
+            "SELECT external_user_id, language FROM conversations WHERE external_chat_id='1'"
+        ).fetchone()
+    assert tuple(metadata) == ("new", "it")
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"platform": " ", "external_chat_id": "1"},
+        {"platform": "telegram", "external_chat_id": " "},
+        {"platform": "telegram", "external_chat_id": "1", "language": "de"},
+    ],
+)
+def test_invalid_reset_does_not_write(tmp_path: Path, kwargs: dict) -> None:
+    database = tmp_path / "chat.db"
+    service = ChatService(database, FakeRAG())  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        service.reset(**kwargs)
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM conversations").fetchone()[0] == 0
