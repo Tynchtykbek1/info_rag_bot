@@ -13,6 +13,7 @@ from .conversations import (
 )
 from .database import connect_database, initialize_database
 from .followup import ContextualQuery, build_contextual_query
+from .message_routing import MessageRoute, direct_reply, route_message
 from .rag import FALLBACKS, Language, RAGAnswer, RAGService
 
 
@@ -21,6 +22,9 @@ class ChatResult:
     conversation_id: str
     contextual_query: ContextualQuery
     rag_answer: RAGAnswer
+    original_query: str = ""
+    normalized_query: str = ""
+    route: MessageRoute = MessageRoute.DOMAIN_QUERY
 
 
 def _positive_integer(value: int, field: str) -> None:
@@ -94,11 +98,12 @@ class ChatService:
         query: str,
         language: Language,
     ) -> ChatResult:
-        normalized_query = _required(query, "query")
+        _required(query, "query")
         normalized_platform = _required(platform, "platform")
         normalized_chat_id = _required(external_chat_id, "external_chat_id")
         if language not in FALLBACKS:
             raise ValueError("language must be ru, en, or it")
+        routed = route_message(query, language)
 
         connection = connect_database(self.database_path)
         try:
@@ -119,20 +124,31 @@ class ChatService:
                     connection,
                     conversation_id=conversation.id,
                     role="user",
-                    content=normalized_query,
+                    content=query,
                 )
         finally:
             connection.close()
 
-        contextual_query = build_contextual_query(
-            normalized_query,
-            history,
-            max_user_messages=self.max_user_messages,
-            max_chars=self.max_query_chars,
-        )
-        rag_answer = self.rag_service.answer_contextual(
-            contextual_query, language, top_k=self.top_k
-        )
+        if routed.route == MessageRoute.SMALL_TALK:
+            contextual_query = ContextualQuery(query, query, (), False)
+            rag_answer = RAGAnswer(
+                "answered", direct_reply(routed.small_talk_kind, language),
+                (), "local", (), "supported",
+            )
+        else:
+            domain_history = [
+                message for message in history
+                if message.role != "user" or route_message(message.content, language).route == MessageRoute.DOMAIN_QUERY
+            ]
+            contextual_query = build_contextual_query(
+                routed.normalized,
+                domain_history,
+                max_user_messages=self.max_user_messages,
+                max_chars=self.max_query_chars,
+            )
+            rag_answer = self.rag_service.answer_contextual(
+                contextual_query, language, top_k=self.top_k
+            )
 
         connection = connect_database(self.database_path)
         try:
@@ -145,4 +161,5 @@ class ChatService:
                 )
         finally:
             connection.close()
-        return ChatResult(conversation.id, contextual_query, rag_answer)
+        return ChatResult(conversation.id, contextual_query, rag_answer,
+                          routed.original, routed.normalized, routed.route)

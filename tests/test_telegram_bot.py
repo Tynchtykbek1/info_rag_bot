@@ -7,6 +7,7 @@ from telegram.constants import ChatType
 from telegram.ext import CommandHandler, MessageHandler
 
 from messina_info.chat import ChatResult
+from messina_info.chat import ChatService
 from messina_info.followup import ContextualQuery
 from messina_info.rag import AnswerSource, RAGAnswer
 from messina_info.telegram_bot import (
@@ -153,6 +154,19 @@ def test_answer_format_deduplicates_sources_and_fallback_has_no_sources() -> Non
     text = format_chat_result(_result(sources=(first, second)), "en")
     assert text.count("https://t.me/source/1") == 1 and "Sources:" in text
     assert format_chat_result(_result("Fallback", reason="provider_error"), "en") == "Fallback"
+
+
+def test_telegram_thanks_has_no_sources(tmp_path) -> None:
+    class NoRAG:
+        def answer_contextual(self, *args, **kwargs):
+            raise AssertionError("RAG called")
+
+    service = ChatService(tmp_path / "chat.db", NoRAG())  # type: ignore[arg-type]
+    update, context, message = _objects(service, text="спасибо", language_code="ru")
+    asyncio.run(handle_question(update, context))
+    assert len(message.replies) == 1
+    assert "Пожалуйста" in message.replies[0]
+    assert "Sources" not in message.replies[0]
 
 
 def test_splitting_never_exceeds_limit() -> None:

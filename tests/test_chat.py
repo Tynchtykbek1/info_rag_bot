@@ -7,6 +7,7 @@ from messina_info.chat import ChatService
 from messina_info.conversations import get_recent_messages
 from messina_info.database import connect_database
 from messina_info.rag import FALLBACKS, RAGAnswer
+from messina_info.message_routing import MessageRoute, route_message
 
 
 def _answer(text: str = "Answer", *, fallback: bool = False) -> RAGAnswer:
@@ -54,7 +55,7 @@ def test_first_question_is_standalone_and_messages_are_ordered(tmp_path: Path) -
     assert result.contextual_query.contextualized is False
     assert result.contextual_query.original_query == "First question"
     assert [(m.role, m.content) for m in _messages(database, "1")] == [
-        ("user", "First question"), ("assistant", "Answer")
+        ("user", " First question "), ("assistant", "Answer")
     ]
 
 
@@ -232,3 +233,76 @@ def test_invalid_reset_does_not_write(tmp_path: Path, kwargs: dict) -> None:
         service.reset(**kwargs)
     with sqlite3.connect(database) as connection:
         assert connection.execute("SELECT COUNT(*) FROM conversations").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("language,query", [
+    ("ru", "привет"), ("ru", "спасибо"), ("ru", "благодарю"),
+    ("en", "hello"), ("en", "thanks"), ("en", "thank you"),
+    ("it", "ciao"), ("it", "grazie"), ("it", "arrivederci"),
+])
+def test_small_talk_is_local_and_persisted(tmp_path, language, query):
+    database = tmp_path / "chat.db"
+    rag = FakeRAG(error=AssertionError("RAG called"))
+    result = ChatService(database, rag).reply(  # type: ignore[arg-type]
+        platform="telegram", external_chat_id="1", external_user_id=None,
+        query=query, language=language,
+    )
+    assert result.route == MessageRoute.SMALL_TALK
+    assert result.rag_answer.sources == ()
+    assert rag.calls == []
+    assert [(m.role, m.content) for m in _messages(database, "1")] == [
+        ("user", query), ("assistant", result.rag_answer.answer),
+    ]
+
+
+@pytest.mark.parametrize("query", [
+    "Привет, когда дедлайн ERSU?", "Спасибо, а когда первая выплата?",
+    "Блин, когда эта чертова стипендия?",
+])
+def test_domain_question_reaches_rag(tmp_path, query):
+    rag = FakeRAG()
+    result = ChatService(tmp_path / "chat.db", rag).reply(  # type: ignore[arg-type]
+        platform="telegram", external_chat_id="1", external_user_id=None,
+        query=query, language="ru",
+    )
+    assert result.route == MessageRoute.DOMAIN_QUERY
+    assert len(rag.calls) == 1
+
+
+def test_small_talk_history_excluded_from_context(tmp_path):
+    rag = FakeRAG()
+    service = ChatService(tmp_path / "chat.db", rag)  # type: ignore[arg-type]
+    for query in ("Когда ERSU?", "спасибо", "А когда выплата?"):
+        result = service.reply(platform="telegram", external_chat_id="1",
+                               external_user_id=None, query=query, language="ru")
+    assert "Когда ERSU?" in result.contextual_query.retrieval_query
+    assert "спасибо" not in result.contextual_query.retrieval_query
+    assert len(rag.calls) == 2
+
+
+@pytest.mark.parametrize("language,query,expected", [
+    ("ru", "Доки и стипуха в общаге, универ, пермессо, ричевута, исее", "документы и стипендия в общежитие, университет, permesso di soggiorno, ricevuta, ISEE"),
+    ("ru", "стипа и общагу", "стипендия и общежитие"),
+    ("en", "Docs for uni dorms", "documents for university student accommodation"),
+    ("it", "uni, docs, dorm", "università, documents, student accommodation"),
+    ("en", "university documentations dormitory", "university documentations dormitory"),
+    ("ru", "капнула стипуха", "капнула стипендия"),
+])
+def test_aliases_use_whole_words(language, query, expected):
+    routed = route_message(query, language)
+    assert routed.original == query
+    assert routed.normalized.casefold() == expected.casefold()
+
+
+def test_original_alias_message_is_saved_unchanged(tmp_path):
+    database = tmp_path / "chat.db"
+    rag = FakeRAG()
+    query = "  Доки для универа?  "
+    result = ChatService(database, rag).reply(  # type: ignore[arg-type]
+        platform="telegram", external_chat_id="1", external_user_id=None,
+        query=query, language="ru",
+    )
+    assert _messages(database, "1")[0].content == query
+    assert result.original_query == query
+    assert result.normalized_query == "  документы для универа?  "
+    assert "документы" in rag.calls[0][0].retrieval_query
