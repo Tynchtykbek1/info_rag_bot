@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -8,7 +9,7 @@ from messina_info.interpreter import Interpretation
 from messina_info.message_routing import MessageRoute
 from messina_info.routing_evaluation import (
     Action, Case, CaseResult, action_for_route, evaluate_case, evaluate_cases,
-    load_cases, main, summarize,
+    load_cases, main, prepare_live_interpreter, summarize,
 )
 
 
@@ -47,6 +48,33 @@ def test_dataset_parses_and_has_balanced_coverage():
     tags = {tag for item in cases for tag in item.tags}
     assert {"typo", "prompt_injection", "unsupported_factual_claim", "provider_error",
             "fallback_explanation", "topic_switch", "slang", "profanity_only"} <= tags
+    assert next(item.message for item in cases if item.id == "ru_search_knowledge_002") == (
+        "Кагда дедлайн подачи документов в UniME?"
+    )
+
+
+@pytest.mark.parametrize("message,tags,language,match", [
+    ("????? ?????? UniME?", ["typo"], "ru", "placeholder"),
+    ("Only Latin text", ["explicit_domain"], "ru", "Cyrillic"),
+    ("hello ???", ["greeting"], "en", "placeholder"),
+    ("damaged \ufffd text", ["unclear"], "en", "damaged Unicode"),
+    ("broken \ud800 text", ["unclear"], "en", "damaged Unicode"),
+    ("bad \x00 text", ["unclear"], "en", "damaged Unicode"),
+    ("Ð¿Ñ€Ð¸Ð²ÐµÑ‚", ["multilingual"], "ru", "damaged Unicode"),
+])
+def test_dataset_quality_rejects_corruption(tmp_path, message, tags, language, match):
+    with pytest.raises(ValueError, match=match):
+        load_cases(write_cases(tmp_path, [row(message=message, tags=tags, language=language)]))
+
+
+def test_intentional_unclear_question_marks_are_allowed(tmp_path):
+    result = load_cases(write_cases(tmp_path, [row(language="ru", message="???",
+                                                   tags=["unclear"]) ]))
+    assert result[0].message == "???"
+
+
+def test_every_dataset_case_passes_quality_rules():
+    assert len(load_cases(DATASET)) == 90
 
 
 @pytest.mark.parametrize("changes,match", [
@@ -148,6 +176,24 @@ def test_live_fake_provider_resume_and_batch(tmp_path):
     assert len(records.read_text(encoding="utf-8").splitlines()) == 2
 
 
+def test_deferred_only_filters_before_offset_and_calls_once(tmp_path):
+    cases = [case("fast-1", "hello"),
+             case("deferred-1", "how do I bake bread?", Action.OUT_OF_SCOPE),
+             case("fast-2", "thanks"),
+             case("deferred-2", "where is Paris?", Action.OUT_OF_SCOPE),
+             case("deferred-3", "why?", Action.ASK_CLARIFICATION)]
+    fake = FakeInterpreter()
+    records = tmp_path / "records.jsonl"
+    results = evaluate_cases(cases, mode="live", interpreter=fake, deferred_only=True,
+                             offset=1, limit=2, records_path=records)
+    assert [result.id for result in results] == ["deferred-2", "deferred-3"]
+    assert all(result.interpreter_calls == result.provider_calls == 1 for result in results)
+    assert len(fake.calls) == 2
+    again = evaluate_cases(cases, mode="live", interpreter=fake, deferred_only=True,
+                           offset=1, limit=2, records_path=records)
+    assert again == results and len(fake.calls) == 2
+
+
 def test_provider_error_is_retryable_and_not_scored_as_wrong(tmp_path):
     cases = [case("a", "how do I bake bread?", Action.OUT_OF_SCOPE)]
     records = tmp_path / "records.jsonl"
@@ -190,3 +236,76 @@ def test_cli_local_writes_machine_readable_report_without_provider(tmp_path, cap
     assert report["total_cases"] == 2 and report["deferred_cases"] == 1
     assert report["fast_path_accuracy"] == 1.0
     assert console["interpreter_candidates"] == 1
+
+
+def test_local_cli_never_loads_dotenv(tmp_path, monkeypatch):
+    import messina_info.routing_evaluation as module
+    monkeypatch.setattr(module, "load_local_dotenv", lambda *args: (_ for _ in ()).throw(AssertionError("dotenv read")))
+    dataset = write_cases(tmp_path, [row()])
+    main(["--dataset", str(dataset), "--mode", "local", "--dotenv", str(tmp_path / "secret.env")])
+
+
+def _isolated_environment(monkeypatch):
+    import messina_info.config as config
+    fresh = {}
+    monkeypatch.setattr(os, "environ", fresh)
+    monkeypatch.setattr(config, "environ", fresh)
+    return fresh
+
+
+def test_live_loads_selected_dotenv_and_resolves_model(tmp_path, monkeypatch):
+    environment = _isolated_environment(monkeypatch)
+    dotenv = tmp_path / "selected.env"
+    dotenv.write_text("GEMINI_API_KEY=file-secret\nMESSINA_GEMINI_MODEL=gemini-flash-lite-latest\n",
+                      encoding="utf-8")
+    interpreter, model = prepare_live_interpreter(dotenv)
+    assert model == "gemini-flash-lite-latest"
+    assert interpreter.provider.model == model
+    assert interpreter.provider.max_retries == 0
+    assert environment["GEMINI_API_KEY"] == "file-secret"
+
+
+def test_process_environment_wins_over_dotenv(tmp_path, monkeypatch):
+    environment = _isolated_environment(monkeypatch)
+    environment.update(GEMINI_API_KEY="process-secret", MESSINA_GEMINI_MODEL="process-model")
+    dotenv = tmp_path / "selected.env"
+    dotenv.write_text("GEMINI_API_KEY=file-secret\nMESSINA_GEMINI_MODEL=file-model\n",
+                      encoding="utf-8")
+    _, model = prepare_live_interpreter(dotenv)
+    assert model == "process-model"
+    assert environment["GEMINI_API_KEY"] == "process-secret"
+
+
+def test_missing_key_stops_before_evaluation_or_records(tmp_path, monkeypatch, capsys):
+    _isolated_environment(monkeypatch)
+    dataset = write_cases(tmp_path, [row(message="how do I bake bread?",
+                                         expected_action="OUT_OF_SCOPE")])
+    records = tmp_path / "records.jsonl"
+    with pytest.raises(SystemExit):
+        main(["--dataset", str(dataset), "--mode", "live", "--dotenv",
+              str(tmp_path / "missing.env"), "--records", str(records)])
+    assert not records.exists()
+    assert "GEMINI_API_KEY" in capsys.readouterr().err
+
+
+def test_live_cli_report_contains_model_without_secret(tmp_path, monkeypatch, capsys):
+    import messina_info.routing_evaluation as module
+    _isolated_environment(monkeypatch)
+    dotenv = tmp_path / "selected.env"
+    secret = "test-secret-never-print"
+    dotenv.write_text(f"GEMINI_API_KEY={secret}\nMESSINA_GEMINI_MODEL=gemini-flash-lite-latest\n",
+                      encoding="utf-8")
+    dataset = write_cases(tmp_path, [row(message="how do I bake bread?",
+                                         expected_action="OUT_OF_SCOPE")])
+    class FakeGeminiInterpreter(FakeInterpreter):
+        def __init__(self, provider):
+            super().__init__()
+    monkeypatch.setattr(module, "GeminiMessageInterpreter", FakeGeminiInterpreter)
+    records, report = tmp_path / "records.jsonl", tmp_path / "report.json"
+    main(["--dataset", str(dataset), "--mode", "live", "--deferred-only",
+          "--dotenv", str(dotenv), "--records", str(records), "--report", str(report)])
+    output = capsys.readouterr()
+    assert secret not in output.out + output.err + report.read_text(encoding="utf-8")
+    assert secret not in records.read_text(encoding="utf-8")
+    assert json.loads(report.read_text(encoding="utf-8"))["resolved_model"] == "gemini-flash-lite-latest"
+    assert json.loads(report.read_text(encoding="utf-8"))["provider_calls"] == 1

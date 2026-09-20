@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 import statistics
 import time
 from dataclasses import asdict, dataclass
@@ -14,8 +16,9 @@ from typing import Any, Sequence
 from pydantic import ValidationError
 
 from .conversations import ConversationMessage
+from .config import DEFAULT_DOTENV_PATH, gemini_model, load_local_dotenv
 from .interpreter import GeminiMessageInterpreter, Interpretation, MessageInterpreter
-from .llm import GeminiProvider, LLMConfigurationError
+from .llm import DEFAULT_GEMINI_MODEL, GeminiProvider, LLMConfigurationError
 from .message_routing import MessageRoute, needs_interpretation, route_message
 
 
@@ -33,6 +36,9 @@ ROUTE_ACTION = {
     MessageRoute.UNCLEAR: Action.ASK_CLARIFICATION,
     MessageRoute.OUT_OF_DOMAIN: Action.OUT_OF_SCOPE,
 }
+_CYRILLIC = re.compile(r"[\u0400-\u04ff]")
+_PLACEHOLDERS = re.compile(r"\?{3,}")
+_DAMAGED = re.compile(r"[\ufffd\ud800-\udfff\x00-\x1f]|[ÐÑ][\u0080-\u00bf]")
 
 
 @dataclass(frozen=True)
@@ -102,6 +108,14 @@ def _case(data: Any, line_number: int) -> Case:
         not isinstance(tag, str) or not tag.strip() for tag in data["tags"]
     ):
         raise ValueError(f"line {line_number}: invalid tags")
+    texts = [data["message"], *(content for _, content in items)]
+    if any(_DAMAGED.search(text) for text in texts):
+        raise ValueError(f"line {line_number}: damaged Unicode text")
+    if _PLACEHOLDERS.search(data["message"]) and "unclear" not in data["tags"]:
+        raise ValueError(f"line {line_number}: placeholder question marks require unclear tag")
+    if (data["language"] == "ru" and not {"unclear", "multilingual"}.intersection(data["tags"])
+            and not _CYRILLIC.search(data["message"])):
+        raise ValueError(f"line {line_number}: Russian case lacks Cyrillic")
     return Case(data["id"], data["split"], data["language"], tuple(items),
                 data["last_outcome"], data["message"], expected, tuple(data["tags"]))
 
@@ -186,9 +200,24 @@ def _read_records(path: Path) -> dict[str, CaseResult]:
     return records
 
 
+def prepare_live_interpreter(
+    dotenv_path: str | Path = DEFAULT_DOTENV_PATH,
+) -> tuple[MessageInterpreter, str]:
+    """Load only Gemini configuration; fail before any case if the key is absent."""
+    try:
+        load_local_dotenv(dotenv_path)
+    except Exception as exc:
+        raise ValueError("cannot load live dotenv") from exc
+    if not os.environ.get("GEMINI_API_KEY"):
+        raise ValueError("GEMINI_API_KEY is required for live evaluation")
+    model = gemini_model(DEFAULT_GEMINI_MODEL)
+    return GeminiMessageInterpreter(GeminiProvider(model=model, max_retries=0)), model
+
+
 def evaluate_cases(cases: Sequence[Case], *, mode: str,
                    interpreter: MessageInterpreter | None = None,
                    offset: int = 0, limit: int | None = None,
+                   deferred_only: bool = False,
                    delay_seconds: float = 0.0,
                    records_path: str | Path | None = None) -> tuple[CaseResult, ...]:
     if mode not in {"local", "live"} or offset < 0 or limit is not None and limit < 0 or delay_seconds < 0:
@@ -197,12 +226,15 @@ def evaluate_cases(cases: Sequence[Case], *, mode: str,
         raise ValueError("live mode requires records_path for resume")
     if mode == "local" and records_path is not None:
         raise ValueError("local mode uses --report, not --records")
-    selected = cases[offset:offset + limit if limit is not None else None]
+    eligible = [case for case in cases if needs_interpretation(
+        route_message(case.message, case.language)  # type: ignore[arg-type]
+    )] if deferred_only else list(cases)
+    selected = eligible[offset:offset + limit if limit is not None else None]
     path = Path(records_path) if records_path is not None else None
     previous = _read_records(path) if path is not None else {}
     if mode == "live" and interpreter is None:
         # One SDK request per deferred case: retries belong to a later, explicit run.
-        interpreter = GeminiMessageInterpreter(GeminiProvider(max_retries=0))
+        interpreter, _ = prepare_live_interpreter()
     results: list[CaseResult] = []
     for case in selected:
         prior = previous.get(case.id)
@@ -274,14 +306,27 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--mode", choices=("local", "live"), required=True)
     parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--limit", type=int)
+    parser.add_argument("--deferred-only", action="store_true")
     parser.add_argument("--delay-seconds", type=float, default=0.0)
+    parser.add_argument("--dotenv", type=Path, default=DEFAULT_DOTENV_PATH)
     parser.add_argument("--records", type=Path, help="Resumable JSONL output (required for live)")
     parser.add_argument("--report", type=Path, help="Machine-readable summary JSON")
     args = parser.parse_args(argv)
     cases = load_cases(args.dataset)
+    interpreter = None
+    resolved_model = None
+    if args.mode == "live":
+        try:
+            interpreter, resolved_model = prepare_live_interpreter(args.dotenv)
+        except ValueError as exc:
+            parser.error(str(exc))
     results = evaluate_cases(cases, mode=args.mode, offset=args.offset, limit=args.limit,
-                             delay_seconds=args.delay_seconds, records_path=args.records)
+                             deferred_only=args.deferred_only,
+                             delay_seconds=args.delay_seconds, records_path=args.records,
+                             interpreter=interpreter)
     report = summarize(cases, results)
+    report["resolved_model"] = resolved_model
+    report["deferred_only"] = args.deferred_only
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -290,7 +335,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         "provider_errors", "overall_accuracy", "fast_path_accuracy",
         "fast_path_coverage", "interpreter_candidates", "interpreter_call_rate",
         "provider_calls", "median_latency_ms",
-        "p95_latency_ms", "invalid_schema_count")}, ensure_ascii=False, indent=2))
+        "p95_latency_ms", "invalid_schema_count", "resolved_model",
+        "deferred_only")}, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

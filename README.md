@@ -216,22 +216,26 @@ independent action taxonomy. Local evaluation makes no network calls and reports
 uncertain cases as `DEFERRED` rather than guessing an action:
 
 ```powershell
-python -m messina_info.routing_evaluation --dataset eval/conversation_routing_cases.jsonl --mode local --report eval/local-routing-report.json
+python -m messina_info.routing_evaluation --dataset eval/conversation_routing_cases.jsonl --mode local --report .eval-results/local-routing-report.json
 ```
 
-An explicit live run calls the existing Gemini interpreter only for deferred
-cases. It never invokes RAG or Telegram. Use small resumable batches; completed
+An explicit live run loads the local `.env` using the existing precedence rules
+(process variables win). Use `--dotenv PATH` to select another file. It checks
+for `GEMINI_API_KEY` before processing cases and reports only the resolved model
+name. The run calls the existing Gemini interpreter only for deferred cases.
+It never invokes RAG or Telegram. Use small resumable batches; completed
 cases in the JSONL records file are skipped on the next run, while provider
 errors can be retried:
 
 ```powershell
-python -m messina_info.routing_evaluation --dataset eval/conversation_routing_cases.jsonl --mode live --offset 0 --limit 10 --delay-seconds 2 --records eval/live-routing-records.jsonl --report eval/live-routing-report.json
+python -m messina_info.routing_evaluation --dataset eval/conversation_routing_cases.jsonl --mode live --deferred-only --offset 0 --limit 5 --delay-seconds 2 --records .eval-results/live-routing-records.jsonl --report .eval-results/live-routing-report.json
 ```
 
 Live interpretation adds up to one Gemini request per deferred case and its
 latency and API cost; local fast-path cases require none. The live runner disables
 provider retries so its reported provider-call count matches actual requests.
-Keep generated reports outside Git or remove them before committing.
+Raw records and batch reports in `.eval-results/` are ignored by Git. A stable
+final baseline report may be committed separately after all batches are reviewed.
 
 ## Tests and repository contents
 
