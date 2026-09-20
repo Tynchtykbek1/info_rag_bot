@@ -209,6 +209,30 @@ slang. Clear UniME/ERSU questions go straight to grounded RAG; uncertain message
 use one structured Gemini interpretation call before retrieval. Unrelated or
 unclear requests receive short replies without source links.
 
+## Conversation routing baseline
+
+The synthetic RU/EN/IT cases in `eval/conversation_routing_cases.jsonl` use an
+independent action taxonomy. Local evaluation makes no network calls and reports
+uncertain cases as `DEFERRED` rather than guessing an action:
+
+```powershell
+python -m messina_info.routing_evaluation --dataset eval/conversation_routing_cases.jsonl --mode local --report eval/local-routing-report.json
+```
+
+An explicit live run calls the existing Gemini interpreter only for deferred
+cases. It never invokes RAG or Telegram. Use small resumable batches; completed
+cases in the JSONL records file are skipped on the next run, while provider
+errors can be retried:
+
+```powershell
+python -m messina_info.routing_evaluation --dataset eval/conversation_routing_cases.jsonl --mode live --offset 0 --limit 10 --delay-seconds 2 --records eval/live-routing-records.jsonl --report eval/live-routing-report.json
+```
+
+Live interpretation adds up to one Gemini request per deferred case and its
+latency and API cost; local fast-path cases require none. The live runner disables
+provider retries so its reported provider-call count matches actual requests.
+Keep generated reports outside Git or remove them before committing.
+
 ## Tests and repository contents
 
 Run the complete offline suite with:
