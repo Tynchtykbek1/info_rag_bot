@@ -17,6 +17,12 @@ class MessageRoute(str, Enum):
     UNCLEAR = "UNCLEAR"
 
 
+class SmallTalkKind(str, Enum):
+    GREETING = "GREETING"
+    THANKS = "THANKS"
+    FAREWELL = "FAREWELL"
+
+
 _TALK = {
     "привет": "greeting", "здравствуйте": "greeting", "добрый день": "greeting",
     "hello": "greeting", "hi": "greeting", "hey": "greeting",
@@ -40,6 +46,15 @@ _REPLIES = {
            "thanks": "Prego! Scrivimi se hai domande su UniME o ERSU.",
            "farewell": "Arrivederci! Scrivimi quando vuoi."},
 }
+_NEUTRAL = {
+    "ru": "Если появятся вопросы об UniME или ERSU — пишите.",
+    "en": "Feel free to ask about UniME or ERSU.",
+    "it": "Scrivimi se hai domande su UniME o ERSU.",
+}
+_FILLERS = {"окей", "ок", "ладно", "хорошо", "okay", "ok", "va", "bene", "большое"}
+_THANKS = {"спасибо", "благодарю", "спс", "thanks", "thank", "you", "grazie"}
+_FAREWELLS = {"пока", "bye", "goodbye", "arrivederci"}
+_GREETINGS = {"привет", "приветик", "здарова", "hello", "hi", "hey", "ciao", "salve", "buongiorno"}
 
 _ALIASES = {"стипа": "стипендия", "пермессо": "permesso di soggiorno",
             "ричевута": "ricevuta", "исее": "ISEE", "docs": "documents",
@@ -64,7 +79,7 @@ class RoutedMessage:
     original: str
     normalized: str
     route: MessageRoute
-    small_talk_kind: str | None = None
+    small_talk_kind: SmallTalkKind | None = None
 
 
 def route_message(message: str, language: Language) -> RoutedMessage:
@@ -72,8 +87,17 @@ def route_message(message: str, language: Language) -> RoutedMessage:
     words = _WORD.findall(unicodedata.normalize("NFC", message).casefold())
     phrase = " ".join(words)
     kind = _TALK.get(phrase)
+    if kind is None and words and set(words) <= (_FILLERS | _THANKS | _FAREWELLS | _GREETINGS):
+        tokens = set(words)
+        if tokens & (_THANKS - {"you"}) and ("thank" not in tokens or "you" in tokens):
+            kind = "thanks"
+        elif tokens & _FAREWELLS:
+            kind = "farewell"
+        elif tokens & _GREETINGS:
+            kind = "greeting"
     if kind is not None:
-        return RoutedMessage(message, message, MessageRoute.SMALL_TALK, kind)
+        return RoutedMessage(message, message, MessageRoute.SMALL_TALK,
+                             SmallTalkKind(kind.upper()))
 
     def replace(match: re.Match[str]) -> str:
         word = match.group(0)
@@ -88,8 +112,8 @@ def route_message(message: str, language: Language) -> RoutedMessage:
     return RoutedMessage(message, normalized, MessageRoute.DOMAIN_QUERY)
 
 
-def direct_reply(kind: str, language: Language) -> str:
-    return _REPLIES[language][kind]
+def direct_reply(kind: SmallTalkKind | None, language: Language) -> str:
+    return _REPLIES[language][kind.value.lower()] if kind is not None else _NEUTRAL[language]
 
 
 def needs_interpretation(routed: RoutedMessage) -> bool:

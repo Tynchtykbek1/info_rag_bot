@@ -182,7 +182,7 @@ class ChatService:
         if routed.route == MessageRoute.SMALL_TALK:
             contextual_query = ContextualQuery(query, query, (), False)
             rag_answer = RAGAnswer(
-                "answered", direct_reply(routed.small_talk_kind or "greeting", language),
+                "answered", direct_reply(routed.small_talk_kind, language),
                 (), "local", (), "supported",
             )
         elif routed.route in (MessageRoute.OUT_OF_DOMAIN, MessageRoute.UNCLEAR):
@@ -190,14 +190,20 @@ class ChatService:
             rag_answer = RAGAnswer("answered", _DIRECT[language][routed.route],
                                    (), "local", (), "supported")
         else:
-            contextual_query = build_contextual_query(
-                routed.normalized,
-                () if interpreted is not None or (
-                    self.interpreter is not None and not needs_interpretation(routed)
-                ) else domain_history,
-                max_user_messages=self.max_user_messages,
-                max_chars=self.max_query_chars,
-            )
+            if interpreted is not None:
+                original = route_message(query, language).normalized.strip()
+                standalone = routed.normalized.strip()[:self.max_query_chars]
+                contextual_query = ContextualQuery(
+                    original, standalone, (), original != standalone,
+                )
+            else:
+                contextual_query = build_contextual_query(
+                    routed.normalized,
+                    () if self.interpreter is not None and not needs_interpretation(routed)
+                    else domain_history,
+                    max_user_messages=self.max_user_messages,
+                    max_chars=self.max_query_chars,
+                )
             rag_answer = self.rag_service.answer_contextual(
                 contextual_query, language, top_k=self.top_k
             )

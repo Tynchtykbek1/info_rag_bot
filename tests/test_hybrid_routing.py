@@ -7,7 +7,7 @@ from messina_info.conversations import get_recent_messages
 from messina_info.database import connect_database, initialize_database
 from messina_info.interpreter import Interpretation
 from messina_info.interpreter import GeminiMessageInterpreter
-from messina_info.message_routing import MessageRoute, needs_interpretation, route_message
+from messina_info.message_routing import MessageRoute, SmallTalkKind, direct_reply, needs_interpretation, route_message
 from messina_info.rag import FALLBACKS, RAGAnswer
 
 
@@ -118,8 +118,10 @@ def test_ambiguous_followup_is_rewritten_then_retrieved(tmp_path):
     result = reply(service, "а вся часть?")
     assert len(interpreter.calls) == 1
     assert [item.role for item in interpreter.calls[0][2]] == ["user", "assistant"]
-    assert result.contextual_query.original_query == interpreter.standalone
+    assert result.contextual_query.original_query == "а вся часть?"
     assert rag.calls[-1].retrieval_query == interpreter.standalone
+    assert rag.calls[-1].contextualized is True
+    assert rag.calls[-1].history_messages_used == ()
     assert result.rag_answer.technical_reason == "insufficient_evidence"
     assert result.rag_answer.answer == FALLBACKS["ru"]
 
@@ -132,6 +134,99 @@ def test_capnula_uses_history_and_one_interpretation(tmp_path):
     result = reply(service, "уже капнула?")
     assert len(interpreter.calls) == 1
     assert result.contextual_query.retrieval_query == interpreter.standalone
+
+
+@pytest.mark.parametrize("language,query", [
+    ("ru", "окей спасибо"), ("ru", "ладно спасибо"),
+    ("ru", "хорошо, благодарю"), ("ru", "спс"),
+    ("en", "okay thanks"), ("en", "ok thank you"),
+    ("it", "va bene grazie"), ("it", "ok grazie"),
+])
+def test_filler_thanks_are_local_and_have_thanks_subtype(tmp_path, language, query):
+    interpreter, rag = FakeInterpreter(), FakeRAG()
+    result = reply(ChatService(tmp_path / "chat.db", rag, interpreter=interpreter),
+                   query, language)
+    assert route_message(query, language).small_talk_kind == SmallTalkKind.THANKS
+    assert result.route == MessageRoute.SMALL_TALK
+    assert result.rag_answer.answer == direct_reply(SmallTalkKind.THANKS, language)
+    assert interpreter.calls == [] and rag.calls == []
+
+
+@pytest.mark.parametrize("query", ["Спасибо, а когда выплата?", "окей спасибо, когда ERSU?",
+                                    "okay thanks, when is ERSU due?", "va bene grazie, quando ERSU?"])
+def test_thanks_with_domain_question_stays_domain(tmp_path, query):
+    interpreter, rag = FakeInterpreter(), FakeRAG()
+    result = reply(ChatService(tmp_path / "chat.db", rag, interpreter=interpreter), query)
+    assert result.route == MessageRoute.DOMAIN_QUERY
+    assert len(rag.calls) == 1
+
+
+def test_unknown_small_talk_subtype_is_neutral(tmp_path, monkeypatch):
+    import messina_info.chat as module
+    original_route = module.route_message
+    def unknown(message, language):
+        routed = original_route(message, language)
+        return type(routed)(routed.original, routed.normalized,
+                            MessageRoute.SMALL_TALK, None)
+    monkeypatch.setattr(module, "route_message", unknown)
+    result = reply(ChatService(tmp_path / "chat.db", FakeRAG(),
+                               interpreter=FakeInterpreter()), "окей спасибо")
+    assert result.rag_answer.answer == direct_reply(None, "ru")
+    assert "Привет" not in result.rag_answer.answer
+
+
+def test_first_installment_followup_uses_original_and_standalone(tmp_path):
+    standalone = "Каков размер первой части стипендии ERSU Messina?"
+    interpreter, rag = FakeInterpreter(standalone=standalone), FakeRAG()
+    service = ChatService(tmp_path / "chat.db", rag, interpreter=interpreter)
+    reply(service, "Когда стипуху выплатят?")
+    result = reply(service, "сколько первая часть?")
+    assert len(interpreter.calls) == 1
+    assert result.contextual_query.original_query == "сколько первая часть?"
+    assert result.contextual_query.retrieval_query == standalone
+    assert result.contextual_query.contextualized
+    assert result.contextual_query.history_messages_used == ()
+    assert rag.calls[-1] == result.contextual_query
+
+
+@pytest.mark.parametrize("answerable", [True, False])
+def test_installment_answer_requires_retrieved_evidence_and_citation(tmp_path, answerable):
+    import hashlib
+    import numpy as np
+    from messina_info.llm import StructuredResponse
+    from messina_info.rag import RAGService
+    from messina_info.retrieval import RetrievalDocument, SearchResult
+
+    standalone = "Каков размер первой части стипендии ERSU Messina?"
+    document = RetrievalDocument("synthetic", 1, 1, None, "ru", 0,
+                                 "https://example.test/source", "Первая часть: €100.",
+                                 hashlib.sha256(b"synthetic").hexdigest())
+    class Index:
+        def __init__(self): self.calls = []
+        def search(self, query, *, k, recency_weight, embedding_provider=None):
+            self.calls.append(query)
+            return [SearchResult(document, 0.9, 0.0, 0.9)]
+    class Reranker:
+        def score(self, pairs, *, batch_size):
+            return np.ones(len(pairs), dtype=np.float32)
+    class LLM:
+        def generate(self, system_instruction, user_prompt):
+            return StructuredResponse(answerable=answerable,
+                                      answer="€100" if answerable else None,
+                                      cited_source_ids=["tg-1-1"] if answerable else [],
+                                      reason="synthetic")
+    index = Index()
+    rag = RAGService(index, LLM(), reranker=Reranker())  # type: ignore[arg-type]
+    service = ChatService(tmp_path / "chat.db", rag,
+                          interpreter=FakeInterpreter(standalone=standalone))
+    result = reply(service, "сколько первая часть?")
+    assert index.calls == ["сколько первая часть?", standalone]
+    if answerable:
+        assert result.rag_answer.answer == "€100"
+        assert result.rag_answer.sources[0].source_url == "https://example.test/source"
+    else:
+        assert result.rag_answer.answer == FALLBACKS["ru"]
+        assert result.rag_answer.technical_reason == "insufficient_evidence"
 
 
 @pytest.mark.parametrize("error", [TimeoutError(), RuntimeError("429"), ValueError("invalid JSON")])
