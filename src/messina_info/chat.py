@@ -13,7 +13,8 @@ from .conversations import (
 )
 from .database import connect_database, initialize_database
 from .followup import ContextualQuery, build_contextual_query
-from .message_routing import MessageRoute, direct_reply, route_message
+from .interpreter import MessageInterpreter, Interpretation
+from .message_routing import MessageRoute, direct_reply, needs_interpretation, route_message
 from .rag import FALLBACKS, Language, RAGAnswer, RAGService
 
 
@@ -25,6 +26,16 @@ class ChatResult:
     original_query: str = ""
     normalized_query: str = ""
     route: MessageRoute = MessageRoute.DOMAIN_QUERY
+
+
+_DIRECT = {
+    "ru": {MessageRoute.OUT_OF_DOMAIN: "Я отвечаю на вопросы об UniME, ERSU и студенческой жизни в Мессине.",
+           MessageRoute.UNCLEAR: "Уточните, пожалуйста, ваш вопрос об UniME, ERSU или жизни в Мессине."},
+    "en": {MessageRoute.OUT_OF_DOMAIN: "I answer questions about UniME, ERSU, and student life in Messina.",
+           MessageRoute.UNCLEAR: "Please clarify your question about UniME, ERSU, or life in Messina."},
+    "it": {MessageRoute.OUT_OF_DOMAIN: "Rispondo a domande su UniME, ERSU e la vita studentesca a Messina.",
+           MessageRoute.UNCLEAR: "Puoi chiarire la tua domanda su UniME, ERSU o la vita a Messina?"},
+}
 
 
 def _positive_integer(value: int, field: str) -> None:
@@ -48,6 +59,7 @@ class ChatService:
         max_user_messages: int = 2,
         max_query_chars: int = 1200,
         top_k: int = 5,
+        interpreter: MessageInterpreter | None = None,
     ) -> None:
         _positive_integer(history_limit, "history_limit")
         _positive_integer(max_user_messages, "max_user_messages")
@@ -59,6 +71,7 @@ class ChatService:
         self.max_user_messages = max_user_messages
         self.max_query_chars = max_query_chars
         self.top_k = top_k
+        self.interpreter = interpreter
         initialize_database(self.database_path)
 
     def reset(
@@ -120,7 +133,7 @@ class ChatService:
                     conversation_id=conversation.id,
                     limit=self.history_limit,
                 )
-                append_message(
+                user_message = append_message(
                     connection,
                     conversation_id=conversation.id,
                     role="user",
@@ -129,20 +142,59 @@ class ChatService:
         finally:
             connection.close()
 
+        domain_history = [
+            message for message in history
+            if message.role == "user" and (
+                message.intent == MessageRoute.DOMAIN_QUERY.value or
+                (message.intent is None and route_message(message.content, language).route == MessageRoute.DOMAIN_QUERY)
+            )
+        ]
+        interpreted: Interpretation | None = None
+        if self.interpreter is not None and needs_interpretation(routed):
+            allowed_ids = {message.id for message in domain_history}
+            bounded_history = [
+                message for index, message in enumerate(history)
+                if message.id in allowed_ids or (
+                    message.role == "assistant" and index > 0 and history[index - 1].id in allowed_ids
+                )
+            ][-6:]
+            remaining_chars = 1800
+            trimmed_history = []
+            for message in reversed(bounded_history):
+                content = message.content[:remaining_chars]
+                if not content:
+                    break
+                trimmed_history.append(type(message)(message.id, message.conversation_id,
+                                                     message.role, content, message.created_at,
+                                                     message.intent))
+                remaining_chars -= len(content)
+            bounded_history = trimmed_history[::-1]
+            try:
+                interpreted = self.interpreter.interpret(
+                    routed.normalized, language, bounded_history
+                )
+                interpreted = Interpretation.model_validate(interpreted)
+                routed = type(routed)(routed.original, interpreted.standalone_query,
+                                      interpreted.intent, routed.small_talk_kind)
+            except Exception:
+                if len(routed.normalized.split()) <= 4 and not domain_history:
+                    routed = type(routed)(routed.original, routed.normalized, MessageRoute.UNCLEAR)
         if routed.route == MessageRoute.SMALL_TALK:
             contextual_query = ContextualQuery(query, query, (), False)
             rag_answer = RAGAnswer(
-                "answered", direct_reply(routed.small_talk_kind, language),
+                "answered", direct_reply(routed.small_talk_kind or "greeting", language),
                 (), "local", (), "supported",
             )
+        elif routed.route in (MessageRoute.OUT_OF_DOMAIN, MessageRoute.UNCLEAR):
+            contextual_query = ContextualQuery(query, query, (), False)
+            rag_answer = RAGAnswer("answered", _DIRECT[language][routed.route],
+                                   (), "local", (), "supported")
         else:
-            domain_history = [
-                message for message in history
-                if message.role != "user" or route_message(message.content, language).route == MessageRoute.DOMAIN_QUERY
-            ]
             contextual_query = build_contextual_query(
                 routed.normalized,
-                domain_history,
+                () if interpreted is not None or (
+                    self.interpreter is not None and not needs_interpretation(routed)
+                ) else domain_history,
                 max_user_messages=self.max_user_messages,
                 max_chars=self.max_query_chars,
             )
@@ -153,6 +205,10 @@ class ChatService:
         connection = connect_database(self.database_path)
         try:
             with connection:
+                connection.execute(
+                    "UPDATE conversation_messages SET intent = ? WHERE id = ?",
+                    (routed.route.value, user_message.id),
+                )
                 append_message(
                     connection,
                     conversation_id=conversation.id,

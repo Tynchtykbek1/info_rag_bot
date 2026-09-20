@@ -30,6 +30,7 @@ class ConversationMessage:
     role: MessageRole
     content: str
     created_at: int
+    intent: str | None = None
 
 
 def _required(value: str, field: str) -> str:
@@ -66,6 +67,7 @@ def _message(row: sqlite3.Row | tuple[object, ...]) -> ConversationMessage:
         role=cast(MessageRole, row[2]),
         content=cast(str, row[3]),
         created_at=cast(int, row[4]),
+        intent=cast(str | None, row[5]),
     )
 
 
@@ -118,6 +120,7 @@ def append_message(
     conversation_id: str,
     role: MessageRole,
     content: str,
+    intent: str | None = None,
 ) -> ConversationMessage:
     """Append one message and update the owning conversation timestamp."""
 
@@ -129,11 +132,11 @@ def append_message(
     now = int(time.time())
     row = connection.execute(
         """
-        INSERT INTO conversation_messages (conversation_id, role, content, created_at)
-        SELECT id, ?, ?, ? FROM conversations WHERE id = ?
+        INSERT INTO conversation_messages (conversation_id, role, content, created_at, intent)
+        SELECT id, ?, ?, ?, ? FROM conversations WHERE id = ?
         RETURNING *
         """,
-        (role, content, now, normalized_conversation_id),
+        (role, content, now, intent, normalized_conversation_id),
     ).fetchone()
     if row is None:
         raise ValueError("unknown conversation_id")

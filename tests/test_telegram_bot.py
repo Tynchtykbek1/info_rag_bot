@@ -169,6 +169,27 @@ def test_telegram_thanks_has_no_sources(tmp_path) -> None:
     assert "Sources" not in message.replies[0]
 
 
+@pytest.mark.parametrize("intent", ["OUT_OF_DOMAIN", "UNCLEAR"])
+def test_telegram_interpreted_direct_reply_has_no_sources(tmp_path, intent) -> None:
+    from messina_info.interpreter import Interpretation
+    from messina_info.message_routing import MessageRoute
+
+    class NoRAG:
+        def answer_contextual(self, *args, **kwargs):
+            raise AssertionError("RAG called")
+
+    class Interpreter:
+        def interpret(self, *args):
+            return Interpretation(intent=MessageRoute(intent), standalone_query="unrelated?",
+                                  reason="test")
+
+    service = ChatService(tmp_path / "chat.db", NoRAG(), interpreter=Interpreter())  # type: ignore[arg-type]
+    update, context, message = _objects(service, text="???")
+    asyncio.run(handle_question(update, context))
+    assert len(message.replies) == 1
+    assert "Sources" not in message.replies[0]
+
+
 def test_splitting_never_exceeds_limit() -> None:
     parts = split_message("x" * 9001)
     assert "".join(parts) == "x" * 9001

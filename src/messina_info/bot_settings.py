@@ -12,6 +12,7 @@ from pathlib import Path
 from .chat import ChatService
 from .embeddings import DEFAULT_EMBEDDING_MODEL, EMBEDDING_MODEL_ENV, SentenceTransformerEmbeddingProvider
 from .llm import DEFAULT_GEMINI_MODEL, GEMINI_MODEL_ENV, GeminiProvider
+from .interpreter import GeminiMessageInterpreter
 from .rag import RAGService
 from .reranking import DEFAULT_ONNX_FILE, DEFAULT_RERANKER_MODEL, ONNXCrossEncoderReranker
 from .retrieval import load_retrieval_index
@@ -118,4 +119,5 @@ def create_chat_service(settings: BotSettings) -> ChatService:
         candidate_k=settings.candidate_k,
         reranker_batch_size=settings.reranker_batch_size,
     )
-    return ChatService(settings.database_path, rag)
+    return ChatService(settings.database_path, rag,
+                       interpreter=GeminiMessageInterpreter(llm))

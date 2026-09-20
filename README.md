@@ -204,6 +204,11 @@ history. Answers include Telegram source links but are not guaranteed to be
 perfect. Typical end-to-end latency is several seconds or more, and Gemini may
 occasionally return transient HTTP 429/503 errors.
 
+Hybrid routing answers common greetings locally and normalizes frequent student
+slang. Clear UniME/ERSU questions go straight to grounded RAG; uncertain messages
+use one structured Gemini interpretation call before retrieval. Unrelated or
+unclear requests receive short replies without source links.
+
 ## Tests and repository contents
 
 Run the complete offline suite with:

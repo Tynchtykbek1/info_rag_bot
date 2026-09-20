@@ -304,5 +304,5 @@ def test_original_alias_message_is_saved_unchanged(tmp_path):
     )
     assert _messages(database, "1")[0].content == query
     assert result.original_query == query
-    assert result.normalized_query == "  документы для универа?  "
+    assert result.normalized_query == "  документы для университет?  "
     assert "документы" in rag.calls[0][0].retrieval_query

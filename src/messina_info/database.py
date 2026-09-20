@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
     role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
     content TEXT NOT NULL,
     created_at INTEGER NOT NULL,
+    intent TEXT,
     FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
 );
 """
@@ -73,4 +74,7 @@ def initialize_database(database_path: str | Path) -> None:
         connection.execute(MESSAGES_SCHEMA)
         connection.execute(CONVERSATIONS_SCHEMA)
         connection.execute(CONVERSATION_MESSAGES_SCHEMA)
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(conversation_messages)")}
+        if "intent" not in columns:
+            connection.execute("ALTER TABLE conversation_messages ADD COLUMN intent TEXT")
         connection.execute(CONVERSATION_MESSAGES_INDEX)
