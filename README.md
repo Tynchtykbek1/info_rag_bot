@@ -225,15 +225,21 @@ for `GEMINI_API_KEY` before processing cases and reports only the resolved model
 name. The run calls the existing Gemini interpreter only for deferred cases.
 It never invokes RAG or Telegram. Use small resumable batches; completed
 cases in the JSONL records file are skipped on the next run, while provider
-errors can be retried:
+errors are retried only when marked retryable:
 
 ```powershell
 python -m messina_info.routing_evaluation --dataset eval/conversation_routing_cases.jsonl --mode live --deferred-only --offset 0 --limit 5 --delay-seconds 2 --run-id hybrid-router-4a9169e --records .eval-results/baseline-hybrid-4a9169e-v3-records.jsonl --report .eval-results/baseline-hybrid-4a9169e-v3-report.json
 ```
 
 Advance `--offset` through the deferred cases in small batches, keeping the same
-run ID, resolved model, and records file. Retry any provider errors before the
-final aggregation. After all deferred batches complete, run once without
+run ID, resolved model, and records file. Resume and final aggregation retry only
+transient errors explicitly marked `retryable_error=true`: timeout, connection
+error, and HTTP 408/429/500/502/503/504. Schema/Pydantic validation, configuration,
+and other non-transient errors are terminal and remain part of the baseline.
+Older records without this field default to terminal. Configuration errors count
+as zero provider calls. Reports retain total `provider_errors` and split them into
+`retryable_provider_errors` and `terminal_provider_errors`. After all deferred
+batches complete, run once without
 `--deferred-only`, `--offset`, or `--limit`:
 
 ```bat
@@ -248,7 +254,8 @@ python -m messina_info.routing_evaluation ^
 This reuses completed deferred results, adds fast-path cases locally without
 Gemini calls, and creates one aggregate report for all 90 cases. Report call
 counts and latencies include the reused results; they are not new calls made
-during aggregation. Any unfinished deferred cases still require a provider call.
+during aggregation. Unattempted deferred cases and retryable transient errors
+still require a provider call; completed results and terminal errors are reused without calls.
 Use the new `v3` files for the revised dataset; preserve older results separately.
 
 `--run-id` identifies the evaluated system version. Every live record also

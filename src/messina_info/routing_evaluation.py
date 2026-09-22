@@ -69,6 +69,7 @@ class CaseResult:
     case_fingerprint: str | None = None
     run_id: str | None = None
     resolved_model: str | None = None
+    retryable_error: bool = False
 
 
 def action_for_route(route: MessageRoute) -> Action:
@@ -162,13 +163,19 @@ def _history(case: Case) -> tuple[ConversationMessage, ...]:
                  for i, (role, content) in enumerate(case.history, 1))
 
 
-def _invalid_schema(exc: Exception) -> bool:
+def _error_flags(exc: Exception) -> tuple[bool, bool, bool]:
+    """Classify causes without retaining exception messages or validation input."""
+    invalid = configuration = transient = False
     current: BaseException | None = exc
-    while current is not None:
-        if isinstance(current, ValidationError):
-            return True
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        invalid |= isinstance(current, ValidationError)
+        configuration |= isinstance(current, LLMConfigurationError)
+        if isinstance(current, Exception):
+            transient |= GeminiProvider._transient(current)
         current = current.__cause__
-    return False
+    return invalid, configuration, transient and not invalid and not configuration
 
 
 def evaluate_case(case: Case, *, mode: str,
@@ -179,6 +186,7 @@ def evaluate_case(case: Case, *, mode: str,
     routed = route_message(case.message, case.language)  # type: ignore[arg-type]
     fast = not needs_interpretation(routed)
     provider_calls = 0
+    retryable = False
     if fast:
         prediction = action_for_route(routed.route).value
         calls = 0
@@ -197,14 +205,15 @@ def evaluate_case(case: Case, *, mode: str,
             prediction = action_for_route(validated.intent).value
             error, invalid = None, False
         except Exception as exc:
-            prediction, error, invalid = "PROVIDER_ERROR", type(exc).__name__, _invalid_schema(exc)
-            if isinstance(exc, LLMConfigurationError):
+            invalid, configuration, retryable = _error_flags(exc)
+            prediction, error = "PROVIDER_ERROR", type(exc).__name__
+            if configuration:
                 provider_calls = 0
     else:
         raise ValueError("mode must be local or live")
     return CaseResult(case.id, case.language, case.expected_action.value, prediction,
                       fast, calls, provider_calls, (time.perf_counter() - started) * 1000,
-                      error, invalid, case_fingerprint(case), run_id, resolved_model)
+                      error, invalid, case_fingerprint(case), run_id, resolved_model, retryable)
 
 
 def _read_records(path: Path, cases: Sequence[Case], *,
@@ -276,7 +285,8 @@ def evaluate_cases(cases: Sequence[Case], *, mode: str,
     results: list[CaseResult] = []
     for case in selected:
         prior = previous.get(case.id)
-        if prior is not None and prior.predicted_action != "PROVIDER_ERROR":
+        if prior is not None and not (prior.predicted_action == "PROVIDER_ERROR"
+                                      and prior.retryable_error is True):
             results.append(prior)
             continue
         if mode == "live" and delay_seconds and results:
@@ -324,6 +334,10 @@ def summarize(cases: Sequence[Case], results: Sequence[CaseResult], *,
         "completed_cases": len(completed),
         "deferred_cases": sum(r.predicted_action == "DEFERRED" for r in results),
         "provider_errors": sum(r.predicted_action == "PROVIDER_ERROR" for r in results),
+        "retryable_provider_errors": sum(r.predicted_action == "PROVIDER_ERROR"
+                                         and r.retryable_error is True for r in results),
+        "terminal_provider_errors": sum(r.predicted_action == "PROVIDER_ERROR"
+                                        and r.retryable_error is not True for r in results),
         "invalid_schema_count": sum(r.invalid_schema for r in results),
         "overall_accuracy": correct / len(completed) if completed else None,
         "fast_path_accuracy": accuracy([r for r in completed if r.fast_path]),
@@ -386,7 +400,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         args.report.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({key: report[key] for key in (
         "total_cases", "selected_cases", "completed_cases", "deferred_cases",
-        "provider_errors", "overall_accuracy", "fast_path_accuracy",
+        "provider_errors", "retryable_provider_errors", "terminal_provider_errors",
+        "overall_accuracy", "fast_path_accuracy",
         "fast_path_coverage", "interpreter_candidates", "interpreter_call_rate",
         "provider_calls", "median_latency_ms",
         "p95_latency_ms", "invalid_schema_count", "resolved_model",

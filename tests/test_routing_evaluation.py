@@ -206,7 +206,7 @@ class FakeInterpreter:
     def interpret(self, message, language, history):
         self.calls.append((message, language, history))
         if self.fail:
-            raise RuntimeError("synthetic provider failure")
+            raise TimeoutError("synthetic provider failure")
         return Interpretation(intent=MessageRoute.OUT_OF_DOMAIN,
                               standalone_query=message, reason="synthetic")
 
@@ -488,3 +488,141 @@ def test_underspecified_domain_messages():
         "it": "Ho una domanda sull'ERSU",
     }
     assert not any("broad_domain" in c.tags for c in cases)
+
+
+class RaisingInterpreter:
+    def __init__(self, error):
+        self.error = error
+        self.calls = 0
+
+    def interpret(self, *args):
+        self.calls += 1
+        raise self.error
+
+
+def wrapped_error(cause):
+    from messina_info.llm import LLMProviderError
+    error = LLMProviderError("secret-wrapper-response")
+    error.__cause__ = cause
+    return error
+
+
+def schema_error():
+    try:
+        Interpretation.model_validate({"intent": "secret-validation-input"})
+    except ValidationError as exc:
+        return wrapped_error(exc)
+    raise AssertionError("expected validation failure")
+
+
+@pytest.mark.parametrize("aggregate", [False, True])
+@pytest.mark.parametrize("legacy", [False, True])
+def test_terminal_invalid_schema_never_retried(tmp_path, aggregate, legacy, capsys):
+    cases = [case("deferred", "secret-question"), case("fast", "hello")]
+    records = tmp_path / "records.jsonl"
+    fake = RaisingInterpreter(schema_error())
+    first = evaluate_cases(cases, mode="live", interpreter=fake, run_id="run-1",
+                           resolved_model="model-1", deferred_only=True, records_path=records)
+    assert first[0].invalid_schema and not first[0].retryable_error
+    assert fake.calls == 1
+    if legacy:
+        data = json.loads(records.read_text(encoding="utf-8"))
+        del data["retryable_error"]
+        records.write_text(json.dumps(data) + "\n", encoding="utf-8")
+    # Include the fast path so final aggregation can be checked byte-for-byte too.
+    if aggregate:
+        evaluate_cases(cases, mode="live", interpreter=fake, run_id="run-1",
+                       resolved_model="model-1", offset=1, records_path=records)
+    before = records.read_bytes()
+    results = evaluate_cases(cases, mode="live", interpreter=fake, run_id="run-1",
+                             resolved_model="model-1", deferred_only=not aggregate,
+                             records_path=records)
+    assert fake.calls == 1
+    assert records.read_bytes() == before
+    assert results[0].predicted_action == "PROVIDER_ERROR"
+    assert results[0].retryable_error is False
+    report = summarize(cases, results)
+    assert report["provider_errors"] == report["terminal_provider_errors"] == 1
+    assert report["retryable_provider_errors"] == 0
+    assert report["invalid_schema_count"] == 1
+    output = capsys.readouterr()
+    serialized = records.read_text(encoding="utf-8") + json.dumps(report) + output.out + output.err
+    assert "secret" not in serialized
+
+
+@pytest.mark.parametrize("code,retryable", [
+    (408, True), (429, True), (500, True), (502, True), (503, True), (504, True),
+    (400, False), (401, False), (402, False), (403, False), (404, False), (422, False),
+])
+def test_http_retryability_and_resume(tmp_path, code, retryable):
+    cause = RuntimeError("secret-http-response")
+    cause.code = code
+    fake = RaisingInterpreter(wrapped_error(wrapped_error(cause)))
+    cases = [case("http", "secret-question")]
+    records = tmp_path / "records.jsonl"
+    first = evaluate_cases(cases, mode="live", interpreter=fake, run_id="run-1",
+                           resolved_model="model-1", records_path=records)
+    assert first[0].retryable_error is retryable
+    before = records.read_bytes()
+    report = summarize(cases, first)
+    assert report["provider_errors"] == 1
+    assert report["retryable_provider_errors"] == int(retryable)
+    assert report["terminal_provider_errors"] == int(not retryable)
+    recovered = FakeInterpreter()
+    results = evaluate_cases(cases, mode="live", interpreter=recovered, run_id="run-1",
+                             resolved_model="model-1", records_path=records)
+    assert len(recovered.calls) == int(retryable)
+    if retryable:
+        assert results[0].predicted_action == "OUT_OF_SCOPE"
+        assert len(records.read_text(encoding="utf-8").splitlines()) == 2
+    else:
+        assert results == first
+        assert records.read_bytes() == before
+    assert "secret" not in records.read_text(encoding="utf-8") + json.dumps(report)
+
+
+@pytest.mark.parametrize("cause", [TimeoutError("secret-timeout"), ConnectionError("secret-connection")])
+def test_transport_errors_retryable(cause):
+    result = evaluate_case(case("transport", "secret-question"), mode="live",
+                           interpreter=RaisingInterpreter(wrapped_error(cause)))
+    assert result.retryable_error and result.provider_calls == 1
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_configuration_error_terminal_without_provider_call(tmp_path, wrapped):
+    from messina_info.llm import LLMConfigurationError
+    cause = LLMConfigurationError("secret-api-key-env")
+    cause.__cause__ = TimeoutError("secret-timeout")
+    fake = RaisingInterpreter(wrapped_error(cause) if wrapped else cause)
+    cases = [case("config", "secret-question")]
+    records = tmp_path / "records.jsonl"
+    first = evaluate_cases(cases, mode="live", interpreter=fake, run_id="run-1",
+                           resolved_model="model-1", records_path=records)
+    assert not first[0].retryable_error and first[0].provider_calls == 0
+    before = records.read_bytes()
+    again = evaluate_cases(cases, mode="live", interpreter=fake, run_id="run-1",
+                           resolved_model="model-1", records_path=records)
+    assert fake.calls == 1 and again == first and records.read_bytes() == before
+    assert "secret" not in records.read_text(encoding="utf-8") + json.dumps(summarize(cases, again))
+
+
+def test_schema_error_overrides_transient_cause():
+    error = schema_error()
+    error.__cause__.__cause__ = TimeoutError("secret-timeout")
+    result = evaluate_case(case("schema", "secret-question"), mode="live",
+                           interpreter=RaisingInterpreter(error))
+    assert result.invalid_schema and not result.retryable_error
+
+
+def test_report_splits_mixed_provider_errors():
+    cases = [case("transient"), case("terminal"), case("ok")]
+    results = [
+        CaseResult("transient", "en", "DIRECT_REPLY", "PROVIDER_ERROR", False, 1, 1, 1,
+                   retryable_error=True),
+        CaseResult("terminal", "en", "DIRECT_REPLY", "PROVIDER_ERROR", False, 1, 1, 1),
+        evaluate_case(cases[2], mode="local"),
+    ]
+    report = summarize(cases, results)
+    assert report["provider_errors"] == 2
+    assert report["retryable_provider_errors"] == report["terminal_provider_errors"] == 1
+    assert report["completed_cases"] == 1 and report["overall_accuracy"] == 1.0
