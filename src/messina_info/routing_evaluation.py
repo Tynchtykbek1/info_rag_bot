@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -65,10 +66,25 @@ class CaseResult:
     latency_ms: float
     error: str | None = None
     invalid_schema: bool = False
+    case_fingerprint: str | None = None
+    run_id: str | None = None
+    resolved_model: str | None = None
 
 
 def action_for_route(route: MessageRoute) -> Action:
     return ROUTE_ACTION[route]
+
+
+def case_fingerprint(case: Case) -> str:
+    payload = {
+        "id": case.id, "split": case.split, "language": case.language,
+        "history": [{"role": role, "content": content} for role, content in case.history],
+        "last_outcome": case.last_outcome, "message": case.message,
+        "expected_action": case.expected_action.value, "tags": list(case.tags),
+    }
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                           separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _case(data: Any, line_number: int) -> Case:
@@ -156,7 +172,9 @@ def _invalid_schema(exc: Exception) -> bool:
 
 
 def evaluate_case(case: Case, *, mode: str,
-                  interpreter: MessageInterpreter | None = None) -> CaseResult:
+                  interpreter: MessageInterpreter | None = None,
+                  run_id: str | None = None,
+                  resolved_model: str | None = None) -> CaseResult:
     started = time.perf_counter()
     routed = route_message(case.message, case.language)  # type: ignore[arg-type]
     fast = not needs_interpretation(routed)
@@ -186,7 +204,7 @@ def evaluate_case(case: Case, *, mode: str,
         raise ValueError("mode must be local or live")
     return CaseResult(case.id, case.language, case.expected_action.value, prediction,
                       fast, calls, provider_calls, (time.perf_counter() - started) * 1000,
-                      error, invalid)
+                      error, invalid, case_fingerprint(case), run_id, resolved_model)
 
 
 def _read_records(path: Path) -> dict[str, CaseResult]:
@@ -195,7 +213,11 @@ def _read_records(path: Path) -> dict[str, CaseResult]:
     records: dict[str, CaseResult] = {}
     for line in path.read_text(encoding="utf-8").splitlines():
         if line.strip():
-            record = CaseResult(**json.loads(line))
+            data = json.loads(line)
+            missing = {"case_fingerprint", "run_id", "resolved_model"} - set(data)
+            if missing:
+                raise ValueError("legacy evaluation record lacks resume identity")
+            record = CaseResult(**data)
             records[record.id] = record
     return records
 
@@ -216,6 +238,8 @@ def prepare_live_interpreter(
 
 def evaluate_cases(cases: Sequence[Case], *, mode: str,
                    interpreter: MessageInterpreter | None = None,
+                   run_id: str | None = None,
+                   resolved_model: str | None = None,
                    offset: int = 0, limit: int | None = None,
                    deferred_only: bool = False,
                    delay_seconds: float = 0.0,
@@ -224,6 +248,8 @@ def evaluate_cases(cases: Sequence[Case], *, mode: str,
         raise ValueError("invalid evaluation options")
     if mode == "live" and records_path is None:
         raise ValueError("live mode requires records_path for resume")
+    if mode == "live" and (not run_id or not resolved_model):
+        raise ValueError("live mode requires run_id and resolved_model")
     if mode == "local" and records_path is not None:
         raise ValueError("local mode uses --report, not --records")
     eligible = [case for case in cases if needs_interpretation(
@@ -238,16 +264,20 @@ def evaluate_cases(cases: Sequence[Case], *, mode: str,
     results: list[CaseResult] = []
     for case in selected:
         prior = previous.get(case.id)
-        if prior is not None and (
-            prior.language != case.language or prior.expected_action != case.expected_action.value
-        ):
-            raise ValueError(f"resumed case metadata changed: {case.id}")
+        if prior is not None:
+            if prior.case_fingerprint != case_fingerprint(case):
+                raise ValueError(f"resumed case fingerprint changed: {case.id}")
+            if prior.run_id != run_id:
+                raise ValueError(f"resumed run_id changed: {case.id}")
+            if prior.resolved_model != resolved_model:
+                raise ValueError(f"resumed model changed: {case.id}")
         if prior is not None and prior.predicted_action != "PROVIDER_ERROR":
             results.append(prior)
             continue
         if mode == "live" and delay_seconds and results:
             time.sleep(delay_seconds)
-        result = evaluate_case(case, mode=mode, interpreter=interpreter)
+        result = evaluate_case(case, mode=mode, interpreter=interpreter,
+                               run_id=run_id, resolved_model=resolved_model)
         results.append(result)
         if path is not None:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -256,7 +286,9 @@ def evaluate_cases(cases: Sequence[Case], *, mode: str,
     return tuple(results)
 
 
-def summarize(cases: Sequence[Case], results: Sequence[CaseResult]) -> dict[str, Any]:
+def summarize(cases: Sequence[Case], results: Sequence[CaseResult], *,
+              run_id: str | None = None,
+              resolved_model: str | None = None) -> dict[str, Any]:
     completed = [r for r in results if r.predicted_action not in {"DEFERRED", "PROVIDER_ERROR"}]
     attempted = [r for r in results if r.predicted_action != "DEFERRED"]
     correct = sum(r.predicted_action == r.expected_action for r in completed)
@@ -269,7 +301,20 @@ def summarize(cases: Sequence[Case], results: Sequence[CaseResult]) -> dict[str,
               [*(a.value for a in Action), "DEFERRED", "PROVIDER_ERROR"]} for action in Action}
     for result in results:
         matrix[result.expected_action][result.predicted_action] += 1
+    case_by_id = {case.id: case for case in cases}
+    split_metrics = {}
+    for split in ("dev", "holdout"):
+        split_results = [r for r in completed if case_by_id[r.id].split == split]
+        split_metrics[split] = {
+            "total_cases": sum(case.split == split for case in cases),
+            "selected_cases": sum(case_by_id[r.id].split == split for r in results),
+            "completed_cases": len(split_results),
+            "accuracy": accuracy(split_results),
+        }
     return {
+        "run_id": run_id, "resolved_model": resolved_model,
+        "case_fingerprints": {result.id: case_fingerprint(case_by_id[result.id])
+                              for result in results},
         "total_cases": len(cases), "selected_cases": len(results),
         "completed_cases": len(completed),
         "deferred_cases": sum(r.predicted_action == "DEFERRED" for r in results),
@@ -296,7 +341,7 @@ def summarize(cases: Sequence[Case], results: Sequence[CaseResult]) -> dict[str,
                                      for r in results) for decision in
                        [*(a.value for a in Action), "DEFERRED", "PROVIDER_ERROR"]}
             for language in ("ru", "en", "it")
-        },
+        }, "by_split": split_metrics,
     }
 
 
@@ -307,6 +352,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--limit", type=int)
     parser.add_argument("--deferred-only", action="store_true")
+    parser.add_argument("--run-id", help="Required live identity for resume safety")
     parser.add_argument("--delay-seconds", type=float, default=0.0)
     parser.add_argument("--dotenv", type=Path, default=DEFAULT_DOTENV_PATH)
     parser.add_argument("--records", type=Path, help="Resumable JSONL output (required for live)")
@@ -316,6 +362,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     interpreter = None
     resolved_model = None
     if args.mode == "live":
+        if not args.run_id:
+            parser.error("--run-id is required for live evaluation")
         try:
             interpreter, resolved_model = prepare_live_interpreter(args.dotenv)
         except ValueError as exc:
@@ -323,9 +371,10 @@ def main(argv: Sequence[str] | None = None) -> None:
     results = evaluate_cases(cases, mode=args.mode, offset=args.offset, limit=args.limit,
                              deferred_only=args.deferred_only,
                              delay_seconds=args.delay_seconds, records_path=args.records,
-                             interpreter=interpreter)
-    report = summarize(cases, results)
-    report["resolved_model"] = resolved_model
+                             interpreter=interpreter, run_id=args.run_id,
+                             resolved_model=resolved_model)
+    report = summarize(cases, results, run_id=args.run_id,
+                       resolved_model=resolved_model)
     report["deferred_only"] = args.deferred_only
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)

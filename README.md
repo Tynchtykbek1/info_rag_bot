@@ -228,8 +228,12 @@ cases in the JSONL records file are skipped on the next run, while provider
 errors can be retried:
 
 ```powershell
-python -m messina_info.routing_evaluation --dataset eval/conversation_routing_cases.jsonl --mode live --deferred-only --offset 0 --limit 5 --delay-seconds 2 --records .eval-results/live-routing-records.jsonl --report .eval-results/live-routing-report.json
+python -m messina_info.routing_evaluation --dataset eval/conversation_routing_cases.jsonl --mode live --deferred-only --offset 0 --limit 5 --delay-seconds 2 --run-id hybrid-router-4a9169e --records .eval-results/baseline-hybrid-4a9169e-v2-records.jsonl --report .eval-results/baseline-hybrid-4a9169e-v2-report.json
 ```
+
+`--run-id` identifies the evaluated system version. Every live record also
+contains the resolved model and a fingerprint of the complete annotated case.
+Resume stops if any of these values differ or if a legacy record lacks them.
 
 Live interpretation adds up to one Gemini request per deferred case and its
 latency and API cost; local fast-path cases require none. The live runner disables
