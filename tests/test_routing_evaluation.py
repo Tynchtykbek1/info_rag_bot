@@ -38,7 +38,7 @@ def row(**updates):
 
 def test_dataset_parses_and_has_balanced_coverage():
     cases = load_cases(DATASET)
-    assert len(cases) >= 90
+    assert len(cases) == 90
     assert {language: sum(c.language == language for c in cases) for language in ("ru", "en", "it")} == {
         "ru": 30, "en": 30, "it": 30,
     }
@@ -83,11 +83,11 @@ def test_calibrated_tags_follow_annotation_guide():
     assert all(case.expected_action == Action.DIRECT_REPLY
                for case in cases if "profanity_only" in case.tags)
     assert all(case.expected_action == Action.ASK_CLARIFICATION
-               for case in cases if "broad_domain" in case.tags)
+               for case in cases if "underspecified_domain" in case.tags)
     assert all(case.expected_action == Action.SEARCH_KNOWLEDGE
                for case in cases if "thanks_domain" in case.tags)
     assert sum("profanity_only" in case.tags for case in cases) == 3
-    assert sum("broad_domain" in case.tags for case in cases) == 3
+    assert sum("underspecified_domain" in case.tags for case in cases) == 3
     assert sum("thanks_domain" in case.tags for case in cases) == 3
 
 
@@ -371,7 +371,8 @@ def test_missing_key_stops_before_evaluation_or_records(tmp_path, monkeypatch, c
     assert "GEMINI_API_KEY" in capsys.readouterr().err
 
 
-def test_live_cli_requires_run_id_before_loading_dotenv(tmp_path, monkeypatch):
+@pytest.mark.parametrize("run_args", [[], ["--run-id", " \t "]])
+def test_live_cli_requires_run_id_before_loading_dotenv(tmp_path, monkeypatch, run_args):
     import messina_info.routing_evaluation as module
     dataset = write_cases(tmp_path, [row(message="how do I bake bread?",
                                          expected_action="OUT_OF_SCOPE")])
@@ -379,7 +380,7 @@ def test_live_cli_requires_run_id_before_loading_dotenv(tmp_path, monkeypatch):
         AssertionError("dotenv loaded before run identity validation")))
     with pytest.raises(SystemExit):
         main(["--dataset", str(dataset), "--mode", "live",
-              "--records", str(tmp_path / "records.jsonl")])
+              "--records", str(tmp_path / "records.jsonl"), *run_args])
 
 
 def test_live_cli_report_contains_model_without_secret(tmp_path, monkeypatch, capsys):
@@ -403,3 +404,87 @@ def test_live_cli_report_contains_model_without_secret(tmp_path, monkeypatch, ca
     assert secret not in records.read_text(encoding="utf-8")
     assert json.loads(report.read_text(encoding="utf-8"))["resolved_model"] == "gemini-flash-lite-latest"
     assert json.loads(report.read_text(encoding="utf-8"))["provider_calls"] == 1
+
+
+@pytest.mark.parametrize("run_id,model,match", [
+    ("run-2", "model-1", "run_id mismatch"),
+    ("run-1", "model-2", "model mismatch"),
+])
+def test_disjoint_batches_reject_different_run_identity(tmp_path, monkeypatch, run_id, model, match):
+    import messina_info.routing_evaluation as module
+    cases = [case("a", "how do I bake bread?"), case("b", "where is Paris?")]
+    records = tmp_path / "records.jsonl"
+    first = FakeInterpreter()
+    evaluate_cases(cases, mode="live", interpreter=first, run_id="run-1",
+                   resolved_model="model-1", offset=0, limit=1, records_path=records)
+    assert len(first.calls) == 1
+    before = records.read_bytes()
+    fake = FakeInterpreter()
+    monkeypatch.setattr(module, "prepare_live_interpreter", lambda: pytest.fail("provider prepared"))
+    for interpreter in (fake, None):
+        with pytest.raises(ValueError, match=match):
+            evaluate_cases(cases, mode="live", interpreter=interpreter, run_id=run_id,
+                           resolved_model=model, offset=1, limit=1, records_path=records)
+        assert records.read_bytes() == before
+        assert fake.calls == []
+
+
+@pytest.mark.parametrize("problem,match", [
+    ("unknown", "unknown case ID"),
+    ("fingerprint", "fingerprint"),
+    ("duplicate_run", "run_id mismatch"),
+    ("duplicate_model", "model mismatch"),
+    ("blank_run", "run_id mismatch"),
+])
+def test_all_record_lines_validated_before_new_cases(tmp_path, problem, match):
+    cases = [case("a", "how do I bake bread?"), case("b", "where is Paris?")]
+    records = tmp_path / "records.jsonl"
+    evaluate_cases(cases, mode="live", interpreter=FakeInterpreter(), run_id="run-1",
+                   resolved_model="model-1", limit=1, records_path=records)
+    original = records.read_text(encoding="utf-8")
+    changed = json.loads(original)
+    if problem == "unknown":
+        changed["id"] = "secret-unknown-id"
+    elif problem == "fingerprint":
+        changed["case_fingerprint"] = "secret-fingerprint"
+    elif problem == "duplicate_model":
+        changed["resolved_model"] = "secret-model"
+    else:
+        changed["run_id"] = " \t " if problem == "blank_run" else "secret-run"
+    records.write_text(json.dumps(changed) + "\n" + (original if problem.startswith("duplicate") else ""),
+                       encoding="utf-8")
+    before = records.read_bytes()
+    fake = FakeInterpreter()
+    with pytest.raises(ValueError, match=match) as error:
+        evaluate_cases(cases, mode="live", interpreter=fake, run_id="run-1",
+                       resolved_model="model-1", offset=1, records_path=records)
+    assert "secret" not in str(error.value)
+    assert fake.calls == []
+    assert records.read_bytes() == before
+
+
+def test_final_aggregate_reuses_deferred_and_adds_fast_paths(tmp_path):
+    cases = load_cases(DATASET)
+    records = tmp_path / "records.jsonl"
+    fake = FakeInterpreter()
+    deferred = evaluate_cases(cases, mode="live", interpreter=fake, run_id="run-1",
+                              resolved_model="model-1", deferred_only=True, records_path=records)
+    calls = len(fake.calls)
+    results = evaluate_cases(cases, mode="live", interpreter=fake, run_id="run-1",
+                             resolved_model="model-1", records_path=records)
+    assert len(fake.calls) == calls
+    assert all(result in results for result in deferred)
+    assert all(result.provider_calls == 0 for result in results if result.fast_path)
+    report = summarize(cases, results)
+    assert report["selected_cases"] == report["completed_cases"] == 90
+    assert len(records.read_text(encoding="utf-8").splitlines()) == 90
+
+
+def test_underspecified_domain_messages():
+    cases = load_cases(DATASET)
+    assert {c.language: c.message for c in cases if "underspecified_domain" in c.tags} == {
+        "ru": "У меня вопрос про ERSU",
+        "en": "I have a question about ERSU",
+        "it": "Ho una domanda sull'ERSU",
+    }
+    assert not any("broad_domain" in c.tags for c in cases)

@@ -207,10 +207,12 @@ def evaluate_case(case: Case, *, mode: str,
                       error, invalid, case_fingerprint(case), run_id, resolved_model)
 
 
-def _read_records(path: Path) -> dict[str, CaseResult]:
+def _read_records(path: Path, cases: Sequence[Case], *,
+                  run_id: str | None, resolved_model: str | None) -> dict[str, CaseResult]:
     if not path.exists():
         return {}
     records: dict[str, CaseResult] = {}
+    case_by_id = {case.id: case for case in cases}
     for line in path.read_text(encoding="utf-8").splitlines():
         if line.strip():
             data = json.loads(line)
@@ -218,6 +220,15 @@ def _read_records(path: Path) -> dict[str, CaseResult]:
             if missing:
                 raise ValueError("legacy evaluation record lacks resume identity")
             record = CaseResult(**data)
+            if not record.run_id or not record.run_id.strip() or record.run_id != run_id:
+                raise ValueError("resumed run_id mismatch")
+            if record.resolved_model != resolved_model:
+                raise ValueError("resumed model mismatch")
+            case = case_by_id.get(record.id)
+            if case is None:
+                raise ValueError("evaluation record references unknown case ID")
+            if record.case_fingerprint != case_fingerprint(case):
+                raise ValueError("resumed case fingerprint changed")
             records[record.id] = record
     return records
 
@@ -248,7 +259,7 @@ def evaluate_cases(cases: Sequence[Case], *, mode: str,
         raise ValueError("invalid evaluation options")
     if mode == "live" and records_path is None:
         raise ValueError("live mode requires records_path for resume")
-    if mode == "live" and (not run_id or not resolved_model):
+    if mode == "live" and (not run_id or not run_id.strip() or not resolved_model):
         raise ValueError("live mode requires run_id and resolved_model")
     if mode == "local" and records_path is not None:
         raise ValueError("local mode uses --report, not --records")
@@ -257,20 +268,14 @@ def evaluate_cases(cases: Sequence[Case], *, mode: str,
     )] if deferred_only else list(cases)
     selected = eligible[offset:offset + limit if limit is not None else None]
     path = Path(records_path) if records_path is not None else None
-    previous = _read_records(path) if path is not None else {}
+    previous = _read_records(path, cases, run_id=run_id,
+                             resolved_model=resolved_model) if path is not None else {}
     if mode == "live" and interpreter is None:
         # One SDK request per deferred case: retries belong to a later, explicit run.
         interpreter, _ = prepare_live_interpreter()
     results: list[CaseResult] = []
     for case in selected:
         prior = previous.get(case.id)
-        if prior is not None:
-            if prior.case_fingerprint != case_fingerprint(case):
-                raise ValueError(f"resumed case fingerprint changed: {case.id}")
-            if prior.run_id != run_id:
-                raise ValueError(f"resumed run_id changed: {case.id}")
-            if prior.resolved_model != resolved_model:
-                raise ValueError(f"resumed model changed: {case.id}")
         if prior is not None and prior.predicted_action != "PROVIDER_ERROR":
             results.append(prior)
             continue
@@ -362,7 +367,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     interpreter = None
     resolved_model = None
     if args.mode == "live":
-        if not args.run_id:
+        if not args.run_id or not args.run_id.strip():
             parser.error("--run-id is required for live evaluation")
         try:
             interpreter, resolved_model = prepare_live_interpreter(args.dotenv)

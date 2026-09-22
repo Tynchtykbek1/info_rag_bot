@@ -5,11 +5,15 @@ prescribe exact response wording.
 
 - `SEARCH_KNOWLEDGE`: A factual domain question about UniME, ERSU, or student
   life in Messina, including a follow-up whose subject is clear from history.
+  Broad but meaningful questions (for example, "Tell me about student life in
+  Messina") also use `SEARCH_KNOWLEDGE`.
 - `DIRECT_REPLY`: A message that needs a conversational response without a
   knowledge search, such as a greeting, thanks, farewell, standalone emotion,
   or standalone profanity.
 - `ASK_CLARIFICATION`: A potentially domain-related question that is too vague
-  to resolve reliably from its message and history.
+  to resolve reliably from its message and history. A topic-only message without
+  an actual question (for example, "I have a question about ERSU") uses
+  `ASK_CLARIFICATION` and the `underspecified_domain` tag.
 - `EXPLAIN_PREVIOUS`: A request to explain the previous assistant answer or
   system outcome.
 - `OUT_OF_SCOPE`: A clearly unrelated request, or a follow-up that clearly

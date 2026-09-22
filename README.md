@@ -216,7 +216,7 @@ independent action taxonomy. Local evaluation makes no network calls and reports
 uncertain cases as `DEFERRED` rather than guessing an action:
 
 ```powershell
-python -m messina_info.routing_evaluation --dataset eval/conversation_routing_cases.jsonl --mode local --report .eval-results/local-routing-report.json
+python -m messina_info.routing_evaluation --dataset eval/conversation_routing_cases.jsonl --mode local --report .eval-results/local-routing-v3-report.json
 ```
 
 An explicit live run loads the local `.env` using the existing precedence rules
@@ -228,12 +228,36 @@ cases in the JSONL records file are skipped on the next run, while provider
 errors can be retried:
 
 ```powershell
-python -m messina_info.routing_evaluation --dataset eval/conversation_routing_cases.jsonl --mode live --deferred-only --offset 0 --limit 5 --delay-seconds 2 --run-id hybrid-router-4a9169e --records .eval-results/baseline-hybrid-4a9169e-v2-records.jsonl --report .eval-results/baseline-hybrid-4a9169e-v2-report.json
+python -m messina_info.routing_evaluation --dataset eval/conversation_routing_cases.jsonl --mode live --deferred-only --offset 0 --limit 5 --delay-seconds 2 --run-id hybrid-router-4a9169e --records .eval-results/baseline-hybrid-4a9169e-v3-records.jsonl --report .eval-results/baseline-hybrid-4a9169e-v3-report.json
 ```
+
+Advance `--offset` through the deferred cases in small batches, keeping the same
+run ID, resolved model, and records file. Retry any provider errors before the
+final aggregation. After all deferred batches complete, run once without
+`--deferred-only`, `--offset`, or `--limit`:
+
+```bat
+python -m messina_info.routing_evaluation ^
+  --dataset eval/conversation_routing_cases.jsonl ^
+  --mode live ^
+  --run-id hybrid-router-4a9169e ^
+  --records .eval-results/baseline-hybrid-4a9169e-v3-records.jsonl ^
+  --report .eval-results/baseline-hybrid-4a9169e-v3-final-report.json
+```
+
+This reuses completed deferred results, adds fast-path cases locally without
+Gemini calls, and creates one aggregate report for all 90 cases. Report call
+counts and latencies include the reused results; they are not new calls made
+during aggregation. Any unfinished deferred cases still require a provider call.
+Use the new `v3` files for the revised dataset; preserve older results separately.
 
 `--run-id` identifies the evaluated system version. Every live record also
 contains the resolved model and a fingerprint of the complete annotated case.
-Resume stops if any of these values differ or if a legacy record lacks them.
+Before processing any batch, every existing record is checked against the current
+run ID and model, even outside the selected batch. Each fingerprint is checked
+against its corresponding dataset case. Resume stops on a mismatch, an unknown
+case ID, or a legacy record missing identity fields, before calls or new records.
+Blank or whitespace-only run IDs are rejected before loading `.env`.
 
 Live interpretation adds up to one Gemini request per deferred case and its
 latency and API cost; local fast-path cases require none. The live runner disables

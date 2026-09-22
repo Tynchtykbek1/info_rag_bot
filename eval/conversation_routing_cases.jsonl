@@ -12,7 +12,7 @@
 {"id": "ru_direct_reply_006", "split": "holdout", "language": "ru", "history": [], "last_outcome": null, "message": "Grazie, спасибо", "expected_action": "DIRECT_REPLY", "tags": ["multilingual", "thanks"]}
 {"id": "ru_ask_clarification_001", "split": "dev", "language": "ru", "history": [], "last_outcome": null, "message": "а это когда?", "expected_action": "ASK_CLARIFICATION", "tags": ["ambiguous_followup", "empty_history"]}
 {"id": "ru_ask_clarification_002", "split": "dev", "language": "ru", "history": [], "last_outcome": null, "message": "???", "expected_action": "ASK_CLARIFICATION", "tags": ["unclear"]}
-{"id": "ru_ask_clarification_003", "split": "dev", "language": "ru", "history": [], "last_outcome": null, "message": "Расскажи про жизнь в Мессине", "expected_action": "ASK_CLARIFICATION", "tags": ["broad_domain"]}
+{"id": "ru_ask_clarification_003", "split": "dev", "language": "ru", "history": [], "last_outcome": null, "message": "У меня вопрос про ERSU", "expected_action": "ASK_CLARIFICATION", "tags": ["underspecified_domain"]}
 {"id": "ru_ask_clarification_004", "split": "dev", "language": "ru", "history": [{"role": "user", "content": "Привет!"}, {"role": "assistant", "content": "Привет! Чем могу помочь?"}], "last_outcome": null, "message": "что с этим?", "expected_action": "ASK_CLARIFICATION", "tags": ["ambiguous_followup", "irrelevant_history"]}
 {"id": "ru_ask_clarification_005", "split": "dev", "language": "ru", "history": [], "last_outcome": null, "message": "ну как там?", "expected_action": "ASK_CLARIFICATION", "tags": ["unclear"]}
 {"id": "ru_ask_clarification_006", "split": "holdout", "language": "ru", "history": [], "last_outcome": null, "message": "эээ", "expected_action": "ASK_CLARIFICATION", "tags": ["unclear"]}
@@ -42,7 +42,7 @@
 {"id": "en_direct_reply_006", "split": "holdout", "language": "en", "history": [], "last_outcome": null, "message": "Ciao, thanks", "expected_action": "DIRECT_REPLY", "tags": ["multilingual", "thanks"]}
 {"id": "en_ask_clarification_001", "split": "dev", "language": "en", "history": [], "last_outcome": null, "message": "when is that?", "expected_action": "ASK_CLARIFICATION", "tags": ["ambiguous_followup", "empty_history"]}
 {"id": "en_ask_clarification_002", "split": "dev", "language": "en", "history": [], "last_outcome": null, "message": "???", "expected_action": "ASK_CLARIFICATION", "tags": ["unclear"]}
-{"id": "en_ask_clarification_003", "split": "dev", "language": "en", "history": [], "last_outcome": null, "message": "Tell me about student life in Messina", "expected_action": "ASK_CLARIFICATION", "tags": ["broad_domain"]}
+{"id": "en_ask_clarification_003", "split": "dev", "language": "en", "history": [], "last_outcome": null, "message": "I have a question about ERSU", "expected_action": "ASK_CLARIFICATION", "tags": ["underspecified_domain"]}
 {"id": "en_ask_clarification_004", "split": "dev", "language": "en", "history": [{"role": "user", "content": "Hello!"}, {"role": "assistant", "content": "Hello! How can I help?"}], "last_outcome": null, "message": "what about it?", "expected_action": "ASK_CLARIFICATION", "tags": ["ambiguous_followup", "irrelevant_history"]}
 {"id": "en_ask_clarification_005", "split": "dev", "language": "en", "history": [], "last_outcome": null, "message": "uh, that one?", "expected_action": "ASK_CLARIFICATION", "tags": ["unclear"]}
 {"id": "en_ask_clarification_006", "split": "holdout", "language": "en", "history": [], "last_outcome": null, "message": "asdf qwer", "expected_action": "ASK_CLARIFICATION", "tags": ["unclear"]}
@@ -72,7 +72,7 @@
 {"id": "it_direct_reply_006", "split": "holdout", "language": "it", "history": [], "last_outcome": null, "message": "Hello, grazie", "expected_action": "DIRECT_REPLY", "tags": ["multilingual", "thanks"]}
 {"id": "it_ask_clarification_001", "split": "dev", "language": "it", "history": [], "last_outcome": null, "message": "e quando sarebbe?", "expected_action": "ASK_CLARIFICATION", "tags": ["ambiguous_followup", "empty_history"]}
 {"id": "it_ask_clarification_002", "split": "dev", "language": "it", "history": [], "last_outcome": null, "message": "???", "expected_action": "ASK_CLARIFICATION", "tags": ["unclear"]}
-{"id": "it_ask_clarification_003", "split": "dev", "language": "it", "history": [], "last_outcome": null, "message": "Parlami della vita studentesca a Messina", "expected_action": "ASK_CLARIFICATION", "tags": ["broad_domain"]}
+{"id": "it_ask_clarification_003", "split": "dev", "language": "it", "history": [], "last_outcome": null, "message": "Ho una domanda sull'ERSU", "expected_action": "ASK_CLARIFICATION", "tags": ["underspecified_domain"]}
 {"id": "it_ask_clarification_004", "split": "dev", "language": "it", "history": [{"role": "user", "content": "Ciao!"}, {"role": "assistant", "content": "Ciao! Come posso aiutarti?"}], "last_outcome": null, "message": "e quello?", "expected_action": "ASK_CLARIFICATION", "tags": ["ambiguous_followup", "irrelevant_history"]}
 {"id": "it_ask_clarification_005", "split": "dev", "language": "it", "history": [], "last_outcome": null, "message": "mah, come?", "expected_action": "ASK_CLARIFICATION", "tags": ["unclear"]}
 {"id": "it_ask_clarification_006", "split": "holdout", "language": "it", "history": [], "last_outcome": null, "message": "blabla xyz", "expected_action": "ASK_CLARIFICATION", "tags": ["unclear"]}
