@@ -17,6 +17,10 @@ from typing import Any, Sequence
 from pydantic import ValidationError
 
 from .conversations import ConversationMessage
+from .conversation_controller import (
+    ConversationController, ControllerDecision, DEFAULT_DOMAIN, DomainProfile,
+    controller_fast_path,
+)
 from .config import DEFAULT_DOTENV_PATH, gemini_model, load_local_dotenv
 from .interpreter import GeminiMessageInterpreter, Interpretation, MessageInterpreter
 from .llm import DEFAULT_GEMINI_MODEL, GeminiProvider, LLMConfigurationError
@@ -70,6 +74,7 @@ class CaseResult:
     run_id: str | None = None
     resolved_model: str | None = None
     retryable_error: bool = False
+    engine: str = "legacy"
 
 
 def action_for_route(route: MessageRoute) -> Action:
@@ -180,29 +185,43 @@ def _error_flags(exc: Exception) -> tuple[bool, bool, bool]:
 
 def evaluate_case(case: Case, *, mode: str,
                   interpreter: MessageInterpreter | None = None,
+                  engine: str = "legacy",
+                  controller: ConversationController | None = None,
+                  domain_profile: DomainProfile = DEFAULT_DOMAIN,
                   run_id: str | None = None,
                   resolved_model: str | None = None) -> CaseResult:
     started = time.perf_counter()
-    routed = route_message(case.message, case.language)  # type: ignore[arg-type]
-    fast = not needs_interpretation(routed)
+    if engine not in {"legacy", "controller"} or mode not in {"local", "live"}:
+        raise ValueError("invalid evaluation engine or mode")
+    if engine == "controller":
+        decision = controller_fast_path(case.message, case.language)
+        fast = decision is not None
+    else:
+        routed = route_message(case.message, case.language)  # type: ignore[arg-type]
+        fast = not needs_interpretation(routed)
     provider_calls = 0
     retryable = False
     if fast:
-        prediction = action_for_route(routed.route).value
+        prediction = decision.action.value if engine == "controller" else action_for_route(routed.route).value
         calls = 0
         error = None
         invalid = False
     elif mode == "local":
         prediction, calls, error, invalid = "DEFERRED", 0, None, False
     elif mode == "live":
-        if interpreter is None:
-            raise ValueError("live mode requires an interpreter")
+        if (engine == "legacy" and interpreter is None) or (engine == "controller" and controller is None):
+            raise ValueError("live mode requires the selected engine")
         calls = 1
         provider_calls = 1
         try:
-            parsed = interpreter.interpret(routed.normalized, case.language, _history(case))  # type: ignore[arg-type]
-            validated = Interpretation.model_validate(parsed)
-            prediction = action_for_route(validated.intent).value
+            if engine == "controller":
+                parsed = controller.decide(case.message, case.language, _history(case),
+                                           case.last_outcome, domain_profile)
+                prediction = ControllerDecision.model_validate(parsed).action.value
+            else:
+                parsed = interpreter.interpret(routed.normalized, case.language, _history(case))  # type: ignore[arg-type]
+                validated = Interpretation.model_validate(parsed)
+                prediction = action_for_route(validated.intent).value
             error, invalid = None, False
         except Exception as exc:
             invalid, configuration, retryable = _error_flags(exc)
@@ -213,11 +232,12 @@ def evaluate_case(case: Case, *, mode: str,
         raise ValueError("mode must be local or live")
     return CaseResult(case.id, case.language, case.expected_action.value, prediction,
                       fast, calls, provider_calls, (time.perf_counter() - started) * 1000,
-                      error, invalid, case_fingerprint(case), run_id, resolved_model, retryable)
+                      error, invalid, case_fingerprint(case), run_id, resolved_model, retryable, engine)
 
 
 def _read_records(path: Path, cases: Sequence[Case], *,
-                  run_id: str | None, resolved_model: str | None) -> dict[str, CaseResult]:
+                  run_id: str | None, resolved_model: str | None,
+                  engine: str = "legacy") -> dict[str, CaseResult]:
     if not path.exists():
         return {}
     records: dict[str, CaseResult] = {}
@@ -229,6 +249,8 @@ def _read_records(path: Path, cases: Sequence[Case], *,
             if missing:
                 raise ValueError("legacy evaluation record lacks resume identity")
             record = CaseResult(**data)
+            if record.engine != engine:
+                raise ValueError("resumed engine mismatch")
             if not record.run_id or not record.run_id.strip() or record.run_id != run_id:
                 raise ValueError("resumed run_id mismatch")
             if record.resolved_model != resolved_model:
@@ -256,15 +278,37 @@ def prepare_live_interpreter(
     return GeminiMessageInterpreter(GeminiProvider(model=model, max_retries=0)), model
 
 
+def prepare_live_controller(
+    dotenv_path: str | Path = DEFAULT_DOTENV_PATH,
+) -> tuple[ConversationController, str]:
+    try:
+        load_local_dotenv(dotenv_path)
+    except Exception as exc:
+        raise ValueError("cannot load live dotenv") from exc
+    if not os.environ.get("GEMINI_API_KEY"):
+        raise ValueError("GEMINI_API_KEY is required for live evaluation")
+    model = gemini_model(DEFAULT_GEMINI_MODEL)
+    return ConversationController(GeminiProvider(model=model, max_retries=0)), model
+
+
+def _is_deferred(case: Case, engine: str) -> bool:
+    if engine == "controller":
+        return controller_fast_path(case.message, case.language) is None
+    return needs_interpretation(route_message(case.message, case.language))
+
+
 def evaluate_cases(cases: Sequence[Case], *, mode: str,
                    interpreter: MessageInterpreter | None = None,
+                   engine: str = "legacy",
+                   controller: ConversationController | None = None,
+                   domain_profile: DomainProfile = DEFAULT_DOMAIN,
                    run_id: str | None = None,
                    resolved_model: str | None = None,
                    offset: int = 0, limit: int | None = None,
                    deferred_only: bool = False,
                    delay_seconds: float = 0.0,
                    records_path: str | Path | None = None) -> tuple[CaseResult, ...]:
-    if mode not in {"local", "live"} or offset < 0 or limit is not None and limit < 0 or delay_seconds < 0:
+    if engine not in {"legacy", "controller"} or mode not in {"local", "live"} or offset < 0 or limit is not None and limit < 0 or delay_seconds < 0:
         raise ValueError("invalid evaluation options")
     if mode == "live" and records_path is None:
         raise ValueError("live mode requires records_path for resume")
@@ -272,16 +316,18 @@ def evaluate_cases(cases: Sequence[Case], *, mode: str,
         raise ValueError("live mode requires run_id and resolved_model")
     if mode == "local" and records_path is not None:
         raise ValueError("local mode uses --report, not --records")
-    eligible = [case for case in cases if needs_interpretation(
-        route_message(case.message, case.language)  # type: ignore[arg-type]
-    )] if deferred_only else list(cases)
+    eligible = [case for case in cases if _is_deferred(case, engine)] if deferred_only else list(cases)
     selected = eligible[offset:offset + limit if limit is not None else None]
     path = Path(records_path) if records_path is not None else None
     previous = _read_records(path, cases, run_id=run_id,
-                             resolved_model=resolved_model) if path is not None else {}
-    if mode == "live" and interpreter is None:
+                             resolved_model=resolved_model, engine=engine) if path is not None else {}
+    if mode == "live" and engine == "legacy" and interpreter is None:
         # One SDK request per deferred case: retries belong to a later, explicit run.
         interpreter, _ = prepare_live_interpreter()
+    if mode == "live" and engine == "controller" and controller is None:
+        controller, actual_model = prepare_live_controller()
+        if actual_model != resolved_model:
+            raise ValueError("resolved model mismatch")
     results: list[CaseResult] = []
     for case in selected:
         prior = previous.get(case.id)
@@ -292,6 +338,7 @@ def evaluate_cases(cases: Sequence[Case], *, mode: str,
         if mode == "live" and delay_seconds and results:
             time.sleep(delay_seconds)
         result = evaluate_case(case, mode=mode, interpreter=interpreter,
+                               engine=engine, controller=controller, domain_profile=domain_profile,
                                run_id=run_id, resolved_model=resolved_model)
         results.append(result)
         if path is not None:
@@ -302,8 +349,12 @@ def evaluate_cases(cases: Sequence[Case], *, mode: str,
 
 
 def summarize(cases: Sequence[Case], results: Sequence[CaseResult], *,
+              engine: str | None = None,
               run_id: str | None = None,
               resolved_model: str | None = None) -> dict[str, Any]:
+    engine = engine or (results[0].engine if results else "legacy")
+    if engine not in {"legacy", "controller"} or any(r.engine != engine for r in results):
+        raise ValueError("report engine mismatch")
     completed = [r for r in results if r.predicted_action not in {"DEFERRED", "PROVIDER_ERROR"}]
     attempted = [r for r in results if r.predicted_action != "DEFERRED"]
     correct = sum(r.predicted_action == r.expected_action for r in completed)
@@ -327,7 +378,7 @@ def summarize(cases: Sequence[Case], results: Sequence[CaseResult], *,
             "accuracy": accuracy(split_results),
         }
     return {
-        "run_id": run_id, "resolved_model": resolved_model,
+        "run_id": run_id, "resolved_model": resolved_model, "engine": engine,
         "case_fingerprints": {result.id: case_fingerprint(case_by_id[result.id])
                               for result in results},
         "total_cases": len(cases), "selected_cases": len(results),
@@ -368,6 +419,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", required=True, type=Path)
     parser.add_argument("--mode", choices=("local", "live"), required=True)
+    parser.add_argument("--engine", choices=("legacy", "controller"), default="legacy")
     parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--limit", type=int)
     parser.add_argument("--deferred-only", action="store_true")
@@ -379,27 +431,32 @@ def main(argv: Sequence[str] | None = None) -> None:
     args = parser.parse_args(argv)
     cases = load_cases(args.dataset)
     interpreter = None
+    controller = None
     resolved_model = None
     if args.mode == "live":
         if not args.run_id or not args.run_id.strip():
             parser.error("--run-id is required for live evaluation")
         try:
-            interpreter, resolved_model = prepare_live_interpreter(args.dotenv)
+            if args.engine == "controller":
+                controller, resolved_model = prepare_live_controller(args.dotenv)
+            else:
+                interpreter, resolved_model = prepare_live_interpreter(args.dotenv)
         except ValueError as exc:
             parser.error(str(exc))
     results = evaluate_cases(cases, mode=args.mode, offset=args.offset, limit=args.limit,
+                             engine=args.engine, controller=controller,
                              deferred_only=args.deferred_only,
                              delay_seconds=args.delay_seconds, records_path=args.records,
                              interpreter=interpreter, run_id=args.run_id,
                              resolved_model=resolved_model)
-    report = summarize(cases, results, run_id=args.run_id,
+    report = summarize(cases, results, run_id=args.run_id, engine=args.engine,
                        resolved_model=resolved_model)
     report["deferred_only"] = args.deferred_only
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({key: report[key] for key in (
-        "total_cases", "selected_cases", "completed_cases", "deferred_cases",
+        "engine", "total_cases", "selected_cases", "completed_cases", "deferred_cases",
         "provider_errors", "retryable_provider_errors", "terminal_provider_errors",
         "overall_accuracy", "fast_path_accuracy",
         "fast_path_coverage", "interpreter_candidates", "interpreter_call_rate",

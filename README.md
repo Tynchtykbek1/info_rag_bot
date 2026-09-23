@@ -272,6 +272,54 @@ provider retries so its reported provider-call count matches actual requests.
 Raw records and batch reports in `.eval-results/` are ignored by Git. A stable
 final baseline report may be committed separately after all batches are reviewed.
 
+### Conversation Controller (evaluation only)
+
+The new `ConversationController.decide(message, language, history, last_outcome,
+domain_profile=DEFAULT_DOMAIN)` returns a validated `ControllerDecision` with
+`action`, `standalone_query`, `reply`, and `reason`. `DomainProfile` supplies a
+trusted name, domain description, and response rules. The default covers UniME,
+ERSU, and student life in Messina. History is bounded to six messages / 1800
+characters in chronological order; the current message is passed unchanged.
+Only full-message social greetings, thanks, and farewells have a local fast path.
+All other messages use one structured request, with no automatic retries or
+schema repair. The existing Telegram bot still uses the legacy path.
+
+Choose `--engine controller` to evaluate it; the default is `legacy`. Records and
+reports identify the engine. Records without an engine are legacy; different
+engines cannot share a records file, even across disjoint batches. Run ID, model,
+case fingerprints, and terminal/transient error checks still apply. The frozen
+legacy baseline is 65/90 correct decisions, two schema failures, and 60 provider
+calls. Do not modify the dataset or old v3 results for this comparison.
+
+Offline inspection (no `.env` or Gemini; nontrivial messages are `DEFERRED`):
+
+```bat
+python -m messina_info.routing_evaluation --dataset eval/conversation_routing_cases.jsonl --engine controller --mode local --report .eval-results/controller-74d904a-v1-local-report.json
+```
+
+Future explicitly requested live comparison, using separate records and run ID:
+
+```bat
+python -m messina_info.routing_evaluation ^
+  --dataset eval/conversation_routing_cases.jsonl ^
+  --engine controller --mode live ^
+  --deferred-only --offset 0 --limit 5 --delay-seconds 2 ^
+  --run-id conversation-controller-74d904a-v1 ^
+  --records .eval-results/controller-74d904a-v1-records.jsonl ^
+  --report .eval-results/controller-74d904a-v1-batch-report.json
+```
+
+Advance the offset through controller deferred cases. After the batches finish,
+use the same command without `--deferred-only`, `--offset`, and `--limit`, and
+write `controller-74d904a-v1-final-report.json`. Completed results are reused;
+fast-path cases are added locally. Use the same resolved model as the baseline
+for comparison. Report calls and latency include reused results.
+
+After production integration, domain questions may require an additional LLM
+call before RAG, adding API cost and latency. Controller quality and latency
+remain to be measured in a live comparison; fake-provider tests verify the
+implementation, not improved message understanding.
+
 ## Tests and repository contents
 
 Run the complete offline suite with:
